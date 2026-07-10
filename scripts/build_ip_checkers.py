@@ -10,7 +10,7 @@ SOURCE_URL = (
     "refs/heads/main/rules/domains_geo_detect.list"
 )
 
-OUTPUT_FILE = Path("ip-checkers.json")
+OUTPUT_FILE = Path("rules/ip-checkers.json")
 
 
 def main() -> None:
@@ -34,6 +34,8 @@ def main() -> None:
 
     if not domains:
         raise RuntimeError("No DOMAIN-SUFFIX entries found in source list")
+
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     payload = {
         "version": 3,
