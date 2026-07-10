@@ -5,7 +5,10 @@ on:
   push:
     paths:
       - "*.json"
+      - "scripts/**"
       - ".github/workflows/build.yml"
+  schedule:
+    - cron: "20 3 * * *"
 
 permissions:
   contents: write
@@ -18,7 +21,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download sing-box 1.12.17
+      - name: Generate IP-checkers source
+        run: |
+          set -eu
+          python3 scripts/build_ip_checkers.py
+          python3 -m json.tool ip-checkers.json >/dev/null
+
+      - name: Download sing-box
         run: |
           set -eu
 
@@ -36,20 +45,28 @@ jobs:
 
           sing-box version
 
-      - name: Validate source rule set
+      - name: Validate source rule sets
         run: |
           set -eu
           python3 -m json.tool ru-direct.json >/dev/null
+          python3 -m json.tool ip-checkers.json >/dev/null
 
-      - name: Compile rule set
+      - name: Compile rule sets
         run: |
           set -eu
+
           sing-box rule-set compile \
             --output ru-direct.srs \
             ru-direct.json
 
+          sing-box rule-set compile \
+            --output ip-checkers.srs \
+            ip-checkers.json
+
           test -s ru-direct.srs
-          ls -lh ru-direct.srs
+          test -s ip-checkers.srs
+
+          ls -lh *.srs
 
       - name: Publish latest release
         uses: softprops/action-gh-release@v2
@@ -57,4 +74,6 @@ jobs:
           tag_name: latest
           name: Latest rule sets
           make_latest: true
-          files: ru-direct.srs
+          files: |
+            ru-direct.srs
+            ip-checkers.srs
