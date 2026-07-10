@@ -23,12 +23,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Generate IP-checkers source
+      - name: Generate source rule sets
         run: |
           set -eu
 
-          python3 scripts/build_ip_checkers.py
-          python3 -m json.tool rules/ip-checkers.json >/dev/null
+          python3 scripts/build_ruleset.py \
+            "https://raw.githubusercontent.com/misha-tgshv/shadowrocket-configuration-file/refs/heads/main/rules/domains_geo_detect.list" \
+            "rules/ip-checkers.json"
+
+          python3 scripts/build_ruleset.py \
+            "https://dl.oisd.nl/oisd_big_surge.list" \
+            "rules/oisd.json"
+
+      - name: Validate JSON rule sets
+        run: |
+          set -eu
+
+          for file in rules/*.json; do
+            echo "Validating $file"
+            python3 -m json.tool "$file" >/dev/null
+          done
 
       - name: Download sing-box
         run: |
@@ -48,29 +62,23 @@ jobs:
 
           sing-box version
 
-      - name: Validate source rule sets
-        run: |
-          set -eu
-
-          python3 -m json.tool rules/ru-direct.json >/dev/null
-          python3 -m json.tool rules/ip-checkers.json >/dev/null
-
       - name: Compile rule sets
         run: |
           set -eu
 
           mkdir -p output
 
-          sing-box rule-set compile \
-            --output output/ru-direct.srs \
-            rules/ru-direct.json
+          for file in rules/*.json; do
+            name="$(basename "$file" .json)"
 
-          sing-box rule-set compile \
-            --output output/ip-checkers.srs \
-            rules/ip-checkers.json
+            echo "Compiling $name"
 
-          test -s output/ru-direct.srs
-          test -s output/ip-checkers.srs
+            sing-box rule-set compile \
+              --output "output/${name}.srs" \
+              "$file"
+
+            test -s "output/${name}.srs"
+          done
 
           ls -lh output/*.srs
 
@@ -80,6 +88,4 @@ jobs:
           tag_name: latest
           name: Latest rule sets
           make_latest: true
-          files: |
-            output/ru-direct.srs
-            output/ip-checkers.srs
+          files: output/*.srs
