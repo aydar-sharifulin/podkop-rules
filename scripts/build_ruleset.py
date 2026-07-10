@@ -4,85 +4,108 @@ import json
 import sys
 import urllib.request
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+
+
+SUPPORTED_RULES = {
+    "DOMAIN": "domain",
+    "DOMAIN-SUFFIX": "domain_suffix",
+    "DOMAIN-KEYWORD": "domain_keyword",
+}
 
 
 def download(url: str) -> str:
-    with urllib.request.urlopen(url, timeout=60) as r:
-        return r.read().decode("utf-8")
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "podkop-rules-builder/1.0"},
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return response.read().decode("utf-8-sig")
+    except (HTTPError, URLError) as error:
+        raise RuntimeError(f"Failed to download {url}: {error}") from error
 
 
-def build(source: str):
-    domains = set()
-    suffixes = set()
-    keywords = set()
+def build_ruleset(source: str) -> dict:
+    values: dict[str, set[str]] = {
+        "domain": set(),
+        "domain_suffix": set(),
+        "domain_keyword": set(),
+    }
 
-    for line in source.splitlines():
-        line = line.strip()
+    for raw_line in source.splitlines():
+        line = raw_line.strip()
 
-        if not line or line.startswith("#"):
+        if not line or line.startswith(("#", ";", "//")):
             continue
 
-        if "," not in line:
+        # Surge-правила могут выглядеть так:
+        # DOMAIN-SUFFIX,example.com,REJECT
+        parts = [part.strip() for part in line.split(",")]
+
+        if len(parts) < 2:
             continue
 
-        rule, value = line.split(",", 1)
+        rule_type = parts[0].upper()
+        target_field = SUPPORTED_RULES.get(rule_type)
 
-        rule = rule.strip().upper()
-        value = value.strip().lower().rstrip(".")
-
-        if not value:
+        if target_field is None:
             continue
 
-        if rule == "DOMAIN":
-            domains.add(value)
+        value = parts[1].lower().rstrip(".")
 
-        elif rule == "DOMAIN-SUFFIX":
-            suffixes.add(value)
+        if value:
+            values[target_field].add(value)
 
-        elif rule == "DOMAIN-KEYWORD":
-            keywords.add(value)
+    rule: dict[str, list[str]] = {}
 
-    rule = {}
+    for field, items in values.items():
+        if items:
+            rule[field] = sorted(items)
 
-    if domains:
-        rule["domain"] = sorted(domains)
+    if not rule:
+        raise RuntimeError("No supported domain rules found in source")
 
-    if suffixes:
-        rule["domain_suffix"] = sorted(suffixes)
+    total = sum(len(items) for items in values.values())
 
-    if keywords:
-        rule["domain_keyword"] = sorted(keywords)
+    print(
+        f"Parsed {total} rules: "
+        f"domain={len(values['domain'])}, "
+        f"suffix={len(values['domain_suffix'])}, "
+        f"keyword={len(values['domain_keyword'])}"
+    )
 
     return {
         "version": 3,
-        "rules": [rule]
+        "rules": [rule],
     }
 
 
-def main():
-
+def main() -> None:
     if len(sys.argv) != 3:
-        print("Usage:")
-        print("build_ruleset.py <URL> <OUTPUT_JSON>")
-        sys.exit(1)
+        print(
+            "Usage: python3 scripts/build_ruleset.py "
+            "<SOURCE_URL> <OUTPUT_JSON>",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
-    url = sys.argv[1]
-    output = Path(sys.argv[2])
+    source_url = sys.argv[1]
+    output_path = Path(sys.argv[2])
 
-    print(f"Downloading {url}")
+    print(f"Downloading: {source_url}")
 
-    text = download(url)
+    source = download(source_url)
+    ruleset = build_ruleset(source)
 
-    ruleset = build(text)
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-
-    output.write_text(
-        json.dumps(ruleset, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(ruleset, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
 
-    print(f"Saved {output}")
+    print(f"Created: {output_path}")
 
 
 if __name__ == "__main__":
