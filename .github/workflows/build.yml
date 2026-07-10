@@ -1,0 +1,60 @@
+name: Build sing-box rule sets
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "*.json"
+      - ".github/workflows/build.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download sing-box 1.12.17
+        run: |
+          set -eu
+
+          VERSION="1.12.17"
+          ARCHIVE="sing-box-${VERSION}-linux-amd64.tar.gz"
+          URL="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/${ARCHIVE}"
+
+          curl --fail --location "$URL" --output "$ARCHIVE"
+          tar -xzf "$ARCHIVE"
+
+          install \
+            -m 0755 \
+            "sing-box-${VERSION}-linux-amd64/sing-box" \
+            /usr/local/bin/sing-box
+
+          sing-box version
+
+      - name: Validate source rule set
+        run: |
+          set -eu
+          python3 -m json.tool ru-direct.json >/dev/null
+
+      - name: Compile rule set
+        run: |
+          set -eu
+          sing-box rule-set compile \
+            --output ru-direct.srs \
+            ru-direct.json
+
+          test -s ru-direct.srs
+          ls -lh ru-direct.srs
+
+      - name: Publish latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest rule sets
+          make_latest: true
+          files: ru-direct.srs
