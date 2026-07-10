@@ -23,7 +23,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Generate source rule sets
+      - name: Generate external rule sets
         run: |
           set -eu
 
@@ -44,6 +44,43 @@ jobs:
             python3 -m json.tool "$file" >/dev/null
           done
 
+      - name: Check generated rule counts
+        run: |
+          set -eu
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          minimums = {
+              Path("rules/ip-checkers.json"): 100,
+              Path("rules/oisd.json"): 10000,
+              Path("rules/ru-direct.json"): 1,
+          }
+
+          for path, minimum in minimums.items():
+              if not path.exists():
+                  raise SystemExit(f"Required file not found: {path}")
+
+              with path.open(encoding="utf-8") as file:
+                  data = json.load(file)
+
+              count = 0
+
+              for rule in data.get("rules", []):
+                  for value in rule.values():
+                      if isinstance(value, list):
+                          count += len(value)
+
+              print(f"{path}: {count} entries")
+
+              if count < minimum:
+                  raise SystemExit(
+                      f"{path}: only {count} entries; "
+                      f"expected at least {minimum}"
+                  )
+          PY
+
       - name: Download sing-box
         run: |
           set -eu
@@ -52,7 +89,14 @@ jobs:
           ARCHIVE="sing-box-${VERSION}-linux-amd64.tar.gz"
           URL="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/${ARCHIVE}"
 
-          curl --fail --location "$URL" --output "$ARCHIVE"
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            "$URL" \
+            --output "$ARCHIVE"
+
           tar -xzf "$ARCHIVE"
 
           install \
@@ -62,7 +106,7 @@ jobs:
 
           sing-box version
 
-      - name: Compile rule sets
+      - name: Compile all rule sets
         run: |
           set -eu
 
@@ -70,16 +114,18 @@ jobs:
 
           for file in rules/*.json; do
             name="$(basename "$file" .json)"
+            output="output/${name}.srs"
 
-            echo "Compiling $name"
+            echo "Compiling $file -> $output"
 
             sing-box rule-set compile \
-              --output "output/${name}.srs" \
+              --output "$output" \
               "$file"
 
-            test -s "output/${name}.srs"
+            test -s "$output"
           done
 
+          echo "Compiled rule sets:"
           ls -lh output/*.srs
 
       - name: Publish latest release
@@ -88,4 +134,5 @@ jobs:
           tag_name: latest
           name: Latest rule sets
           make_latest: true
-          files: output/*.srs
+          files: |
+            output/*.srs
