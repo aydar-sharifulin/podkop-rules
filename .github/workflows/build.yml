@@ -33,7 +33,13 @@ jobs:
 
           python3 scripts/build_ruleset.py \
             "https://dl.oisd.nl/oisd_big_surge.list" \
-            "rules/oisd.json"
+            "rules/oisd_big.json"
+
+          python3 scripts/build_ruleset.py \
+            "https://dl.oisd.nl/oisd_small_surge.list" \
+            "rules/oisd_small.json"
+
+            
 
       - name: Validate JSON rule sets
         run: |
