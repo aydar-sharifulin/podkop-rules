@@ -7,6 +7,7 @@ on:
     paths:
       - "rules/*.json"
       - "scripts/**"
+      - "allowlist/**"
       - ".github/workflows/build.yml"
 
   schedule:
@@ -27,6 +28,9 @@ jobs:
         run: |
           set -eu
 
+          # Удаляем старое имя, чтобы случайно не собрать устаревший oisd.srs
+          rm -f rules/oisd.json
+
           python3 scripts/build_ruleset.py \
             "https://raw.githubusercontent.com/misha-tgshv/shadowrocket-configuration-file/refs/heads/main/rules/domains_geo_detect.list" \
             "rules/ip-checkers.json"
@@ -39,7 +43,171 @@ jobs:
             "https://dl.oisd.nl/oisd_small_surge.list" \
             "rules/oisd_small.json"
 
-            
+      - name: Apply OISD allowlist
+        run: |
+          set -eu
+
+          test -f allowlist/oisd.txt
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          allowlist_path = Path("allowlist/oisd.txt")
+
+          allowed_domains = {
+              line.strip().lower()
+              for line in allowlist_path.read_text(encoding="utf-8").splitlines()
+              if line.strip() and not line.lstrip().startswith("#")
+          }
+
+          if not allowed_domains:
+              raise SystemExit("OISD allowlist is empty")
+
+          print("OISD allowlist:")
+          for domain in sorted(allowed_domains):
+              print(f"  - {domain}")
+
+          files = [
+              Path("rules/oisd_big.json"),
+              Path("rules/oisd_small.json"),
+          ]
+
+          list_keys = {
+              "domain",
+              "domain_suffix",
+              "domain_keyword",
+              "domain_regex",
+          }
+
+          for path in files:
+              if not path.exists():
+                  raise SystemExit(f"Required file not found: {path}")
+
+              with path.open(encoding="utf-8") as file:
+                  data = json.load(file)
+
+              removed = []
+
+              for rule in data.get("rules", []):
+                  if not isinstance(rule, dict):
+                      continue
+
+                  for key in list_keys:
+                      values = rule.get(key)
+
+                      if not isinstance(values, list):
+                          continue
+
+                      filtered_values = []
+
+                      for value in values:
+                          if (
+                              isinstance(value, str)
+                              and value.lower() in allowed_domains
+                          ):
+                              removed.append((key, value))
+                          else:
+                              filtered_values.append(value)
+
+                      rule[key] = filtered_values
+
+              # Удаляем пустые правила, если после фильтрации в них ничего не осталось.
+              cleaned_rules = []
+
+              for rule in data.get("rules", []):
+                  if not isinstance(rule, dict):
+                      continue
+
+                  has_values = False
+
+                  for value in rule.values():
+                      if isinstance(value, list) and value:
+                          has_values = True
+                          break
+
+                      if not isinstance(value, list) and value not in (
+                          None,
+                          "",
+                          False,
+                      ):
+                          has_values = True
+                          break
+
+                  if has_values:
+                      cleaned_rules.append(rule)
+
+              data["rules"] = cleaned_rules
+
+              with path.open("w", encoding="utf-8") as file:
+                  json.dump(
+                      data,
+                      file,
+                      ensure_ascii=False,
+                      indent=2,
+                  )
+                  file.write("\n")
+
+              print(f"{path}: removed {len(removed)} entries")
+
+              for key, value in removed:
+                  print(f"  removed {key}: {value}")
+
+          PY
+
+      - name: Verify OISD allowlist exclusions
+        run: |
+          set -eu
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          allowed_domains = {
+              line.strip().lower()
+              for line in Path("allowlist/oisd.txt")
+              .read_text(encoding="utf-8")
+              .splitlines()
+              if line.strip() and not line.lstrip().startswith("#")
+          }
+
+          files = [
+              Path("rules/oisd_big.json"),
+              Path("rules/oisd_small.json"),
+          ]
+
+          found = []
+
+          for path in files:
+              with path.open(encoding="utf-8") as file:
+                  data = json.load(file)
+
+              for rule in data.get("rules", []):
+                  if not isinstance(rule, dict):
+                      continue
+
+                  for key, values in rule.items():
+                      if not isinstance(values, list):
+                          continue
+
+                      for value in values:
+                          if (
+                              isinstance(value, str)
+                              and value.lower() in allowed_domains
+                          ):
+                              found.append(
+                                  f"{path}: {key}: {value}"
+                              )
+
+          if found:
+              print("Allowlisted domains are still present:")
+              for item in found:
+                  print(item)
+
+              raise SystemExit(1)
+
+          print("All OISD allowlist exclusions were applied successfully")
+          PY
 
       - name: Validate JSON rule sets
         run: |
@@ -60,13 +228,16 @@ jobs:
 
           minimums = {
               Path("rules/ip-checkers.json"): 100,
-              Path("rules/oisd.json"): 10000,
+              Path("rules/oisd_big.json"): 10000,
+              Path("rules/oisd_small.json"): 1000,
               Path("rules/ru-direct.json"): 1,
           }
 
           for path, minimum in minimums.items():
               if not path.exists():
-                  raise SystemExit(f"Required file not found: {path}")
+                  raise SystemExit(
+                      f"Required file not found: {path}"
+                  )
 
               with path.open(encoding="utf-8") as file:
                   data = json.load(file)
@@ -74,6 +245,9 @@ jobs:
               count = 0
 
               for rule in data.get("rules", []):
+                  if not isinstance(rule, dict):
+                      continue
+
                   for value in rule.values():
                       if isinstance(value, list):
                           count += len(value)
@@ -116,19 +290,20 @@ jobs:
         run: |
           set -eu
 
+          rm -rf output
           mkdir -p output
 
           for file in rules/*.json; do
             name="$(basename "$file" .json)"
-            output="output/${name}.srs"
+            output_file="output/${name}.srs"
 
-            echo "Compiling $file -> $output"
+            echo "Compiling $file -> $output_file"
 
             sing-box rule-set compile \
-              --output "$output" \
+              --output "$output_file" \
               "$file"
 
-            test -s "$output"
+            test -s "$output_file"
           done
 
           echo "Compiled rule sets:"
