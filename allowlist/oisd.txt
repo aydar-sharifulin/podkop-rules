@@ -1,2 +1,2 @@
-DOMAIN-SUFFIX,appmetrica.yandex.net
-DOMAIN-SUFFIX,uaas.yandex.ru
+appmetrica.yandex.net
+uaas.yandex.ru
