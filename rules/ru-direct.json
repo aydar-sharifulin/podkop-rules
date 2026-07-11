@@ -6,13 +6,27 @@
         "ru",
         "su",
         "xn--p1ai",
+
         "yandex.net",
         "yastatic.net",
         "userapi.com",
         "avito.st",
         "2gis.com",
         "x5static.net",
-        "nalog.ru"
+
+        "nalog.ru",
+
+        "apple.com",
+        "apps.apple.com",
+        "itunes.apple.com",
+        "itunes.com",
+        "appstore.com",
+        "mzstatic.com",
+        "apple-cloudkit.com",
+        "icloud.com",
+        "icloud-content.com",
+        "cdn-apple.com",
+        "aaplimg.com"
       ]
     }
   ]
