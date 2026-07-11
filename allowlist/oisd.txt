@@ -1,0 +1,2 @@
+DOMAIN-SUFFIX,appmetrica.yandex.net
+DOMAIN-SUFFIX,uaas.yandex.ru
