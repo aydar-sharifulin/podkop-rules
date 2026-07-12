@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Prepare build directories
         run: |
@@ -40,6 +40,8 @@ jobs:
           test -f allowlist/oisd.txt
           test -f allowlist/proxy-from-direct.txt
 
+          # Работаем с копией. Исходный rules/ru-direct.json
+          # в репозитории не изменяется.
           cp rules/ru-direct.json build/rules/ru-direct.json
 
       - name: Generate external rule sets
@@ -69,15 +71,18 @@ jobs:
           allowlist_path = Path("allowlist/oisd.txt")
 
           allowed_domains = {
-              line.strip().lower()
+              line.strip().lower().rstrip(".")
               for line in allowlist_path.read_text(
                   encoding="utf-8"
               ).splitlines()
               if line.strip()
-              and not line.lstrip().startswith("#")
+              and not line.lstrip().startswith(("#", ";", "//"))
           }
 
-          print(f"OISD allowlist contains {len(allowed_domains)} domains")
+          print(
+              f"OISD allowlist contains "
+              f"{len(allowed_domains)} domain(s)"
+          )
 
           for domain in sorted(allowed_domains):
               print(f"  - {domain}")
@@ -103,9 +108,16 @@ jobs:
               with path.open(encoding="utf-8") as file:
                   data = json.load(file)
 
+              rules = data.get("rules")
+
+              if not isinstance(rules, list):
+                  raise SystemExit(
+                      f"{path}: missing rules array"
+                  )
+
               removed = []
 
-              for rule in data.get("rules", []):
+              for rule in rules:
                   if not isinstance(rule, dict):
                       continue
 
@@ -118,11 +130,17 @@ jobs:
                       filtered = []
 
                       for value in values:
-                          if (
-                              isinstance(value, str)
-                              and value.strip().lower()
-                              in allowed_domains
-                          ):
+                          if not isinstance(value, str):
+                              filtered.append(value)
+                              continue
+
+                          normalized = (
+                              value.strip()
+                              .lower()
+                              .rstrip(".")
+                          )
+
+                          if normalized in allowed_domains:
                               removed.append((key, value))
                           else:
                               filtered.append(value)
@@ -132,23 +150,28 @@ jobs:
                       else:
                           rule.pop(key, None)
 
-              cleaned_rules = []
-
-              for rule in data.get("rules", []):
-                  if not isinstance(rule, dict):
-                      continue
-
-                  meaningful = any(
-                      value not in (None, "", False, [], {})
+              # Удаляем правила, которые после фильтрации
+              # не содержат никаких значимых полей.
+              data["rules"] = [
+                  rule
+                  for rule in rules
+                  if isinstance(rule, dict)
+                  and any(
+                      value not in (
+                          None,
+                          "",
+                          False,
+                          [],
+                          {},
+                      )
                       for value in rule.values()
                   )
+              ]
 
-                  if meaningful:
-                      cleaned_rules.append(rule)
-
-              data["rules"] = cleaned_rules
-
-              with path.open("w", encoding="utf-8") as file:
+              with path.open(
+                  "w",
+                  encoding="utf-8",
+              ) as file:
                   json.dump(
                       data,
                       file,
@@ -158,14 +181,15 @@ jobs:
                   file.write("\n")
 
               print(
-                  f"{path}: removed {len(removed)} entries"
+                  f"{path}: removed "
+                  f"{len(removed)} entry/entries"
               )
 
               for key, value in removed:
                   print(f"  removed {key}: {value}")
           PY
 
-      - name: Verify OISD exclusions
+      - name: Verify OISD allowlist exclusions
         run: |
           set -eu
 
@@ -174,12 +198,12 @@ jobs:
           from pathlib import Path
 
           allowlisted = {
-              line.strip().lower()
+              line.strip().lower().rstrip(".")
               for line in Path("allowlist/oisd.txt")
               .read_text(encoding="utf-8")
               .splitlines()
               if line.strip()
-              and not line.lstrip().startswith("#")
+              and not line.lstrip().startswith(("#", ";", "//"))
           }
 
           files = [
@@ -211,11 +235,16 @@ jobs:
                           continue
 
                       for value in values:
-                          if (
-                              isinstance(value, str)
-                              and value.strip().lower()
-                              in allowlisted
-                          ):
+                          if not isinstance(value, str):
+                              continue
+
+                          normalized = (
+                              value.strip()
+                              .lower()
+                              .rstrip(".")
+                          )
+
+                          if normalized in allowlisted:
                               found.append(
                                   f"{path}: {key}: {value}"
                               )
@@ -276,21 +305,38 @@ jobs:
           exact_domains = set()
           suffix_domains = set()
 
-          def add_rule(rule_type: str, domain: str) -> None:
-              domain = domain.strip().lower().rstrip(".")
+          def normalize_domain(value: str) -> str:
+              return (
+                  value.strip()
+                  .lower()
+                  .rstrip(".")
+              )
+
+          def add_domain(
+              rule_type: str,
+              domain: str,
+          ) -> None:
+              domain = normalize_domain(domain)
 
               if not domain:
                   return
 
               if rule_type == "DOMAIN":
                   exact_domains.add(domain)
+
               elif rule_type == "DOMAIN-SUFFIX":
                   suffix_domains.add(domain)
 
-          def parse_line(line: str) -> None:
+          def parse_line(
+              line: str,
+              bare_as_suffix: bool,
+          ) -> None:
               line = line.strip()
 
-              if not line or line.startswith("#"):
+              if not line:
+                  return
+
+              if line.startswith(("#", ";", "//")):
                   return
 
               parts = [
@@ -298,10 +344,17 @@ jobs:
                   for part in line.split(",")
               ]
 
+              # В локальном файле разрешаем просто:
+              #
+              # example.com
+              #
+              # Такая строка считается DOMAIN-SUFFIX.
               if len(parts) == 1:
-                  # Строка без префикса считается
-                  # DOMAIN-SUFFIX.
-                  add_rule("DOMAIN-SUFFIX", parts[0])
+                  if bare_as_suffix:
+                      add_domain(
+                          "DOMAIN-SUFFIX",
+                          parts[0],
+                      )
                   return
 
               rule_type = parts[0].upper()
@@ -311,22 +364,47 @@ jobs:
                   "DOMAIN",
                   "DOMAIN-SUFFIX",
               }:
-                  add_rule(rule_type, domain)
+                  add_domain(
+                      rule_type,
+                      domain,
+                  )
 
+          # 1. Локальные пользовательские исключения.
           print(
-              "Reading local proxy exceptions from "
-              f"{local_exceptions_path}"
+              "Reading local proxy exceptions from:"
+          )
+          print(f"  {local_exceptions_path}")
+
+          local_content = (
+              local_exceptions_path.read_text(
+                  encoding="utf-8"
+              )
           )
 
-          for line in local_exceptions_path.read_text(
-              encoding="utf-8"
-          ).splitlines():
-              parse_line(line)
+          for line in local_content.splitlines():
+              parse_line(
+                  line,
+                  bare_as_suffix=True,
+              )
+
+          local_exact_count = len(exact_domains)
+          local_suffix_count = len(suffix_domains)
 
           print(
-              "Downloading external proxy exceptions "
-              f"from {external_url}"
+              f"Local exact domains: "
+              f"{local_exact_count}"
           )
+          print(
+              f"Local domain suffixes: "
+              f"{local_suffix_count}"
+          )
+
+          # 2. Внешний custom-proxy.list.
+          print(
+              "Downloading external proxy "
+              "exceptions from:"
+          )
+          print(f"  {external_url}")
 
           request = urllib.request.Request(
               external_url,
@@ -342,28 +420,38 @@ jobs:
                   request,
                   timeout=30,
               ) as response:
-                  content = response.read().decode(
-                      "utf-8"
+                  external_content = (
+                      response.read()
+                      .decode("utf-8")
                   )
+
           except Exception as error:
               raise SystemExit(
-                  "Failed to download external proxy "
-                  f"exceptions: {error}"
+                  "Failed to download "
+                  f"custom-proxy.list: {error}"
               ) from error
 
-          for line in content.splitlines():
-              parse_line(line)
+          for line in external_content.splitlines():
+              parse_line(
+                  line,
+                  bare_as_suffix=False,
+              )
 
+          print("Combined proxy exceptions:")
           print(
-              "Collected proxy exceptions:"
-          )
-          print(
-              f"  exact domains: {len(exact_domains)}"
+              f"  exact domains: "
+              f"{len(exact_domains)}"
           )
           print(
               f"  domain suffixes: "
               f"{len(suffix_domains)}"
           )
+
+          if not exact_domains and not suffix_domains:
+              raise SystemExit(
+                  "No DOMAIN or DOMAIN-SUFFIX "
+                  "proxy exceptions were collected"
+              )
 
           with ru_direct_path.open(
               encoding="utf-8"
@@ -377,67 +465,64 @@ jobs:
               or not original_rules
           ):
               raise SystemExit(
-                  "ru-direct.json does not contain rules"
+                  "ru-direct.json does not contain "
+                  "a non-empty rules array"
               )
 
-          exception_parts = []
+          # В одном обычном headless rule поля domain
+          # и domain_suffix сопоставляются через OR.
+          #
+          # invert=True превращает его в:
+          #
+          # NOT (
+          #   exact domains
+          #   OR
+          #   domain suffixes
+          # )
+          inverted_exceptions = {
+              "invert": True,
+          }
 
           if exact_domains:
-              exception_parts.append(
-                  {
-                      "domain": sorted(exact_domains)
-                  }
+              inverted_exceptions["domain"] = sorted(
+                  exact_domains
               )
 
           if suffix_domains:
-              exception_parts.append(
-                  {
-                      "domain_suffix": sorted(
-                          suffix_domains
-                      )
-                  }
-              )
+              inverted_exceptions[
+                  "domain_suffix"
+              ] = sorted(suffix_domains)
 
-          if not exception_parts:
-              print(
-                  "No proxy exceptions found; "
-                  "ru-direct remains unchanged"
-              )
+          # Если исходный ru-direct содержит несколько
+          # отдельных правил, объединяем их через OR.
+          if len(original_rules) == 1:
+              original_direct_rule = original_rules[0]
           else:
-              if len(exception_parts) == 1:
-                  exceptions_rule = exception_parts[0]
-              else:
-                  exceptions_rule = {
-                      "type": "logical",
-                      "mode": "or",
-                      "rules": exception_parts,
-                  }
-
-              # Итог:
-              #
-              # original ru-direct
-              # AND
-              # NOT proxy exceptions
-              smart_rule = {
+              original_direct_rule = {
                   "type": "logical",
-                  "mode": "and",
-                  "rules": [
-                      {
-                          "type": "logical",
-                          "mode": "not",
-                          "rules": [
-                              exceptions_rule
-                          ],
-                      },
-                      {
-                          "type": "logical",
-                          "mode": "or",
-                          "rules": original_rules,
-                      },
-                  ],
+                  "mode": "or",
+                  "rules": original_rules,
               }
 
-              data["rules"] = [smart_rule]
+          # Итоговая логика:
+          #
+          # original ru-direct
+          # AND
+          # NOT (
+          #   custom-proxy.list
+          #   OR
+          #   proxy-from-direct.txt
+          # )
+          smart_rule = {
+              "type": "logical",
+              "mode": "and",
+              "rules": [
+                  original_direct_rule,
+                  inverted_exceptions,
+              ],
+          }
+
+          data["rules"] = [smart_rule]
 
           with ru_direct_path.open(
               "w",
@@ -456,11 +541,18 @@ jobs:
           )
           PY
 
-      - name: Validate final JSON
+      - name: Validate final JSON files
         run: |
           set -eu
 
-          for file in build/rules/*.json; do
+          required_json_files="
+          build/rules/ru-direct.json
+          build/rules/ip-checkers.json
+          build/rules/oisd_big.json
+          build/rules/oisd_small.json
+          "
+
+          for file in $required_json_files; do
             echo "Validating JSON: $file"
             python3 -m json.tool "$file" >/dev/null
           done
@@ -473,16 +565,17 @@ jobs:
           import json
           from pathlib import Path
 
-          DOMAIN_KEYS = {
+          ENTRY_KEYS = {
               "domain",
               "domain_suffix",
               "domain_keyword",
               "domain_regex",
               "ip_cidr",
-              "ip_is_private",
+              "source_ip_cidr",
               "port",
               "port_range",
-              "source_ip_cidr",
+              "source_port",
+              "source_port_range",
           }
 
           def count_entries(value) -> int:
@@ -491,7 +584,7 @@ jobs:
 
                   for key, child in value.items():
                       if (
-                          key in DOMAIN_KEYS
+                          key in ENTRY_KEYS
                           and isinstance(child, list)
                       ):
                           total += len(child)
@@ -512,15 +605,18 @@ jobs:
               Path(
                   "build/rules/ip-checkers.json"
               ): 100,
+
               Path(
                   "build/rules/oisd_big.json"
               ): 10000,
+
               Path(
                   "build/rules/oisd_small.json"
               ): 1000,
+
               Path(
                   "build/rules/ru-direct.json"
-              ): 1,
+              ): 10,
           }
 
           for path, minimum in minimums.items():
@@ -576,10 +672,14 @@ jobs:
         run: |
           set -eu
 
-          rm -rf output
-          mkdir -p output
+          required_json_files="
+          build/rules/ru-direct.json
+          build/rules/ip-checkers.json
+          build/rules/oisd_big.json
+          build/rules/oisd_small.json
+          "
 
-          for file in build/rules/*.json; do
+          for file in $required_json_files; do
             name="$(basename "$file" .json)"
             output_file="output/${name}.srs"
 
@@ -617,11 +717,12 @@ jobs:
           done
 
       - name: Publish latest release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: latest
           name: Latest rule sets
           make_latest: true
+          fail_on_unmatched_files: true
           files: |
             output/ru-direct.srs
             output/ip-checkers.srs
