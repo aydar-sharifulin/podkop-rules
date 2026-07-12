@@ -16,6 +16,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-sing-box-rule-sets
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,30 +28,39 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Prepare build directories
+        run: |
+          set -eu
+
+          rm -rf build output
+          mkdir -p build/rules output
+
+          test -f rules/ru-direct.json
+          test -f scripts/build_ruleset.py
+          test -f allowlist/oisd.txt
+          test -f allowlist/proxy-from-direct.txt
+
+          cp rules/ru-direct.json build/rules/ru-direct.json
+
       - name: Generate external rule sets
         run: |
           set -eu
 
-          # Удаляем старое имя, чтобы случайно не собрать устаревший oisd.srs
-          rm -f rules/oisd.json
-
           python3 scripts/build_ruleset.py \
             "https://raw.githubusercontent.com/misha-tgshv/shadowrocket-configuration-file/refs/heads/main/rules/domains_geo_detect.list" \
-            "rules/ip-checkers.json"
+            "build/rules/ip-checkers.json"
 
           python3 scripts/build_ruleset.py \
             "https://dl.oisd.nl/oisd_big_surge.list" \
-            "rules/oisd_big.json"
+            "build/rules/oisd_big.json"
 
           python3 scripts/build_ruleset.py \
             "https://dl.oisd.nl/oisd_small_surge.list" \
-            "rules/oisd_small.json"
+            "build/rules/oisd_small.json"
 
       - name: Apply OISD allowlist
         run: |
           set -eu
-
-          test -f allowlist/oisd.txt
 
           python3 - <<'PY'
           import json
@@ -57,32 +70,35 @@ jobs:
 
           allowed_domains = {
               line.strip().lower()
-              for line in allowlist_path.read_text(encoding="utf-8").splitlines()
-              if line.strip() and not line.lstrip().startswith("#")
+              for line in allowlist_path.read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+              and not line.lstrip().startswith("#")
           }
 
-          if not allowed_domains:
-              raise SystemExit("OISD allowlist is empty")
+          print(f"OISD allowlist contains {len(allowed_domains)} domains")
 
-          print("OISD allowlist:")
           for domain in sorted(allowed_domains):
               print(f"  - {domain}")
 
-          files = [
-              Path("rules/oisd_big.json"),
-              Path("rules/oisd_small.json"),
+          rule_files = [
+              Path("build/rules/oisd_big.json"),
+              Path("build/rules/oisd_small.json"),
           ]
 
-          list_keys = {
+          domain_keys = {
               "domain",
               "domain_suffix",
               "domain_keyword",
               "domain_regex",
           }
 
-          for path in files:
+          for path in rule_files:
               if not path.exists():
-                  raise SystemExit(f"Required file not found: {path}")
+                  raise SystemExit(
+                      f"Required file not found: {path}"
+                  )
 
               with path.open(encoding="utf-8") as file:
                   data = json.load(file)
@@ -93,48 +109,41 @@ jobs:
                   if not isinstance(rule, dict):
                       continue
 
-                  for key in list_keys:
+                  for key in domain_keys:
                       values = rule.get(key)
 
                       if not isinstance(values, list):
                           continue
 
-                      filtered_values = []
+                      filtered = []
 
                       for value in values:
                           if (
                               isinstance(value, str)
-                              and value.lower() in allowed_domains
+                              and value.strip().lower()
+                              in allowed_domains
                           ):
                               removed.append((key, value))
                           else:
-                              filtered_values.append(value)
+                              filtered.append(value)
 
-                      rule[key] = filtered_values
+                      if filtered:
+                          rule[key] = filtered
+                      else:
+                          rule.pop(key, None)
 
-              # Удаляем пустые правила, если после фильтрации в них ничего не осталось.
               cleaned_rules = []
 
               for rule in data.get("rules", []):
                   if not isinstance(rule, dict):
                       continue
 
-                  has_values = False
+                  meaningful = any(
+                      value not in (None, "", False, [], {})
+                      for value in rule.values()
+                  )
 
-                  for value in rule.values():
-                      if isinstance(value, list) and value:
-                          has_values = True
-                          break
-
-                      if not isinstance(value, list) and value not in (
-                          None,
-                          "",
-                          False,
-                      ):
-                          has_values = True
-                          break
-
-                  if has_values:
+                  if meaningful:
                       cleaned_rules.append(rule)
 
               data["rules"] = cleaned_rules
@@ -148,14 +157,15 @@ jobs:
                   )
                   file.write("\n")
 
-              print(f"{path}: removed {len(removed)} entries")
+              print(
+                  f"{path}: removed {len(removed)} entries"
+              )
 
               for key, value in removed:
                   print(f"  removed {key}: {value}")
-
           PY
 
-      - name: Verify OISD allowlist exclusions
+      - name: Verify OISD exclusions
         run: |
           set -eu
 
@@ -163,18 +173,26 @@ jobs:
           import json
           from pathlib import Path
 
-          allowed_domains = {
+          allowlisted = {
               line.strip().lower()
               for line in Path("allowlist/oisd.txt")
               .read_text(encoding="utf-8")
               .splitlines()
-              if line.strip() and not line.lstrip().startswith("#")
+              if line.strip()
+              and not line.lstrip().startswith("#")
           }
 
           files = [
-              Path("rules/oisd_big.json"),
-              Path("rules/oisd_small.json"),
+              Path("build/rules/oisd_big.json"),
+              Path("build/rules/oisd_small.json"),
           ]
+
+          domain_keys = {
+              "domain",
+              "domain_suffix",
+              "domain_keyword",
+              "domain_regex",
+          }
 
           found = []
 
@@ -186,35 +204,264 @@ jobs:
                   if not isinstance(rule, dict):
                       continue
 
-                  for key, values in rule.items():
+                  for key in domain_keys:
+                      values = rule.get(key)
+
                       if not isinstance(values, list):
                           continue
 
                       for value in values:
                           if (
                               isinstance(value, str)
-                              and value.lower() in allowed_domains
+                              and value.strip().lower()
+                              in allowlisted
                           ):
                               found.append(
                                   f"{path}: {key}: {value}"
                               )
 
           if found:
-              print("Allowlisted domains are still present:")
+              print(
+                  "Allowlisted domains remain in OISD:"
+              )
+
               for item in found:
-                  print(item)
+                  print(f"  {item}")
 
               raise SystemExit(1)
 
-          print("All OISD allowlist exclusions were applied successfully")
+          print(
+              "All OISD allowlist exclusions "
+              "were applied successfully"
+          )
           PY
 
-      - name: Validate JSON rule sets
+      - name: Inject proxy exceptions into ru-direct
         run: |
           set -eu
 
-          for file in rules/*.json; do
-            echo "Validating $file"
+          python3 - <<'PY'
+          import json
+          import urllib.request
+          from pathlib import Path
+
+          ru_direct_path = Path(
+              "build/rules/ru-direct.json"
+          )
+
+          local_exceptions_path = Path(
+              "allowlist/proxy-from-direct.txt"
+          )
+
+          external_url = (
+              "https://raw.githubusercontent.com/"
+              "misha-tgshv/"
+              "shadowrocket-configuration-file/"
+              "refs/heads/main/rules/"
+              "custom-proxy.list"
+          )
+
+          if not ru_direct_path.exists():
+              raise SystemExit(
+                  f"Required file not found: "
+                  f"{ru_direct_path}"
+              )
+
+          if not local_exceptions_path.exists():
+              raise SystemExit(
+                  f"Required file not found: "
+                  f"{local_exceptions_path}"
+              )
+
+          exact_domains = set()
+          suffix_domains = set()
+
+          def add_rule(rule_type: str, domain: str) -> None:
+              domain = domain.strip().lower().rstrip(".")
+
+              if not domain:
+                  return
+
+              if rule_type == "DOMAIN":
+                  exact_domains.add(domain)
+              elif rule_type == "DOMAIN-SUFFIX":
+                  suffix_domains.add(domain)
+
+          def parse_line(line: str) -> None:
+              line = line.strip()
+
+              if not line or line.startswith("#"):
+                  return
+
+              parts = [
+                  part.strip()
+                  for part in line.split(",")
+              ]
+
+              if len(parts) == 1:
+                  # Строка без префикса считается
+                  # DOMAIN-SUFFIX.
+                  add_rule("DOMAIN-SUFFIX", parts[0])
+                  return
+
+              rule_type = parts[0].upper()
+              domain = parts[1]
+
+              if rule_type in {
+                  "DOMAIN",
+                  "DOMAIN-SUFFIX",
+              }:
+                  add_rule(rule_type, domain)
+
+          print(
+              "Reading local proxy exceptions from "
+              f"{local_exceptions_path}"
+          )
+
+          for line in local_exceptions_path.read_text(
+              encoding="utf-8"
+          ).splitlines():
+              parse_line(line)
+
+          print(
+              "Downloading external proxy exceptions "
+              f"from {external_url}"
+          )
+
+          request = urllib.request.Request(
+              external_url,
+              headers={
+                  "User-Agent": (
+                      "podkop-rules-github-actions/1.0"
+                  )
+              },
+          )
+
+          try:
+              with urllib.request.urlopen(
+                  request,
+                  timeout=30,
+              ) as response:
+                  content = response.read().decode(
+                      "utf-8"
+                  )
+          except Exception as error:
+              raise SystemExit(
+                  "Failed to download external proxy "
+                  f"exceptions: {error}"
+              ) from error
+
+          for line in content.splitlines():
+              parse_line(line)
+
+          print(
+              "Collected proxy exceptions:"
+          )
+          print(
+              f"  exact domains: {len(exact_domains)}"
+          )
+          print(
+              f"  domain suffixes: "
+              f"{len(suffix_domains)}"
+          )
+
+          with ru_direct_path.open(
+              encoding="utf-8"
+          ) as file:
+              data = json.load(file)
+
+          original_rules = data.get("rules")
+
+          if (
+              not isinstance(original_rules, list)
+              or not original_rules
+          ):
+              raise SystemExit(
+                  "ru-direct.json does not contain rules"
+              )
+
+          exception_parts = []
+
+          if exact_domains:
+              exception_parts.append(
+                  {
+                      "domain": sorted(exact_domains)
+                  }
+              )
+
+          if suffix_domains:
+              exception_parts.append(
+                  {
+                      "domain_suffix": sorted(
+                          suffix_domains
+                      )
+                  }
+              )
+
+          if not exception_parts:
+              print(
+                  "No proxy exceptions found; "
+                  "ru-direct remains unchanged"
+              )
+          else:
+              if len(exception_parts) == 1:
+                  exceptions_rule = exception_parts[0]
+              else:
+                  exceptions_rule = {
+                      "type": "logical",
+                      "mode": "or",
+                      "rules": exception_parts,
+                  }
+
+              # Итог:
+              #
+              # original ru-direct
+              # AND
+              # NOT proxy exceptions
+              smart_rule = {
+                  "type": "logical",
+                  "mode": "and",
+                  "rules": [
+                      {
+                          "type": "logical",
+                          "mode": "not",
+                          "rules": [
+                              exceptions_rule
+                          ],
+                      },
+                      {
+                          "type": "logical",
+                          "mode": "or",
+                          "rules": original_rules,
+                      },
+                  ],
+              }
+
+              data["rules"] = [smart_rule]
+
+          with ru_direct_path.open(
+              "w",
+              encoding="utf-8",
+          ) as file:
+              json.dump(
+                  data,
+                  file,
+                  ensure_ascii=False,
+                  indent=2,
+              )
+              file.write("\n")
+
+          print(
+              f"Generated final {ru_direct_path}"
+          )
+          PY
+
+      - name: Validate final JSON
+        run: |
+          set -eu
+
+          for file in build/rules/*.json; do
+            echo "Validating JSON: $file"
             python3 -m json.tool "$file" >/dev/null
           done
 
@@ -226,11 +473,54 @@ jobs:
           import json
           from pathlib import Path
 
+          DOMAIN_KEYS = {
+              "domain",
+              "domain_suffix",
+              "domain_keyword",
+              "domain_regex",
+              "ip_cidr",
+              "ip_is_private",
+              "port",
+              "port_range",
+              "source_ip_cidr",
+          }
+
+          def count_entries(value) -> int:
+              if isinstance(value, dict):
+                  total = 0
+
+                  for key, child in value.items():
+                      if (
+                          key in DOMAIN_KEYS
+                          and isinstance(child, list)
+                      ):
+                          total += len(child)
+                      else:
+                          total += count_entries(child)
+
+                  return total
+
+              if isinstance(value, list):
+                  return sum(
+                      count_entries(item)
+                      for item in value
+                  )
+
+              return 0
+
           minimums = {
-              Path("rules/ip-checkers.json"): 100,
-              Path("rules/oisd_big.json"): 10000,
-              Path("rules/oisd_small.json"): 1000,
-              Path("rules/ru-direct.json"): 1,
+              Path(
+                  "build/rules/ip-checkers.json"
+              ): 100,
+              Path(
+                  "build/rules/oisd_big.json"
+              ): 10000,
+              Path(
+                  "build/rules/oisd_small.json"
+              ): 1000,
+              Path(
+                  "build/rules/ru-direct.json"
+              ): 1,
           }
 
           for path, minimum in minimums.items():
@@ -239,20 +529,16 @@ jobs:
                       f"Required file not found: {path}"
                   )
 
-              with path.open(encoding="utf-8") as file:
+              with path.open(
+                  encoding="utf-8"
+              ) as file:
                   data = json.load(file)
 
-              count = 0
+              count = count_entries(data)
 
-              for rule in data.get("rules", []):
-                  if not isinstance(rule, dict):
-                      continue
-
-                  for value in rule.values():
-                      if isinstance(value, list):
-                          count += len(value)
-
-              print(f"{path}: {count} entries")
+              print(
+                  f"{path}: {count} entries"
+              )
 
               if count < minimum:
                   raise SystemExit(
@@ -286,18 +572,19 @@ jobs:
 
           sing-box version
 
-      - name: Compile all rule sets
+      - name: Compile rule sets
         run: |
           set -eu
 
           rm -rf output
           mkdir -p output
 
-          for file in rules/*.json; do
+          for file in build/rules/*.json; do
             name="$(basename "$file" .json)"
             output_file="output/${name}.srs"
 
-            echo "Compiling $file -> $output_file"
+            echo \
+              "Compiling $file -> $output_file"
 
             sing-box rule-set compile \
               --output "$output_file" \
@@ -309,6 +596,26 @@ jobs:
           echo "Compiled rule sets:"
           ls -lh output/*.srs
 
+      - name: Verify compiled files
+        run: |
+          set -eu
+
+          required_files="
+          output/ru-direct.srs
+          output/ip-checkers.srs
+          output/oisd_big.srs
+          output/oisd_small.srs
+          "
+
+          for file in $required_files; do
+            if [ ! -s "$file" ]; then
+              echo "Missing or empty file: $file"
+              exit 1
+            fi
+
+            echo "Verified: $file"
+          done
+
       - name: Publish latest release
         uses: softprops/action-gh-release@v2
         with:
@@ -316,4 +623,7 @@ jobs:
           name: Latest rule sets
           make_latest: true
           files: |
-            output/*.srs
+            output/ru-direct.srs
+            output/ip-checkers.srs
+            output/oisd_big.srs
+            output/oisd_small.srs
