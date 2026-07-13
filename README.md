@@ -2,9 +2,9 @@
 
 Custom rule sets and helper scripts for **Podkop** and **sing-box**.
 
-The project automatically builds and publishes binary **`.srs`** rule sets through GitHub Actions to provide predictable **domain-based routing** for OpenWrt routers.
+The project automatically builds and publishes binary **`.srs`** rule sets through GitHub Actions.
 
-Instead of relying primarily on large GeoIP databases, the recommended configuration uses compact domain rule sets that are easier to understand, maintain and troubleshoot while remaining compatible with Russian services, banking applications and Apple devices.
+The recommended configuration uses **domain-based routing** instead of relying primarily on large GeoIP databases. This makes routing easier to understand, maintain and troubleshoot while remaining compatible with Russian services, banking applications and Apple devices.
 
 ---
 
@@ -55,9 +55,15 @@ PROXY
 | Rule Set | Description |
 |----------|-------------|
 | `ru-direct.srs` | Russian and trusted domains |
-| `ip-checkers.srs` | IP detection services |
-| `oisd_small.srs` | Recommended block list |
-| `oisd_big.srs` | Aggressive block list |
+| `ip-checkers.srs` | IP detection and geolocation services |
+| `oisd_small.srs` | Recommended ad & malware block list |
+| `oisd_big.srs` | More aggressive blocking |
+
+Latest release:
+
+```text
+https://github.com/aydar-sharifulin/podkop-rules/releases/latest
+```
 
 ---
 
@@ -65,7 +71,7 @@ PROXY
 
 Some Podkop versions evaluate general **DIRECT** rules before user-defined **PROXY** domains.
 
-The optional patch changes the evaluation order so that explicit proxy domains always take precedence over general DIRECT rule sets.
+The optional patch changes the evaluation order:
 
 ```text
 BLOCK
@@ -77,7 +83,9 @@ DIRECT domains
 Default PROXY
 ```
 
-The patch only changes the **routing priority**.
+This guarantees that manually configured proxy domains always take precedence over general DIRECT rule sets.
+
+The patch **only changes route evaluation order**.
 
 It does **not** modify:
 
@@ -85,7 +93,9 @@ It does **not** modify:
 - DNS
 - FakeIP
 - proxy protocols
-- rule sets
+- generated rule sets
+
+> Reapply the patch after upgrading Podkop because `/usr/bin/podkop` may be replaced.
 
 ---
 
@@ -105,10 +115,10 @@ rules/
 
 scripts/
 ├── build_ruleset.py
-└── patch-podkop-route-priority.sh
+└── patch-podkop-proxy-priority.sh
 ```
 
-Generated automatically during GitHub Actions:
+Generated during GitHub Actions:
 
 ```text
 build/
@@ -119,9 +129,24 @@ output/
 
 ## Updating Podkop
 
+Update rule sets:
+
 ```sh
 podkop list_update
+```
+
+Restart:
+
+```sh
 podkop restart
+```
+
+Clear sing-box cache:
+
+```sh
+podkop stop
+rm -f /tmp/sing-box/cache.db
+podkop start
 ```
 
 ---
@@ -134,12 +159,10 @@ Benefits:
 
 - predictable routing;
 - easier troubleshooting;
-- lower router CPU usage;
+- smaller rule sets;
 - faster updates;
 - easier maintenance.
 
+GeoIP can still be added if a particular installation requires it, but it is **not part of the recommended configuration**.
+
 ---
-
-## License
-
-MIT
