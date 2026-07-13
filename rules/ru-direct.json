@@ -7,7 +7,6 @@
         "su",
         "xn--p1ai",
 
-        // Яндекс
         "yandex.net",
         "yastatic.net",
         "yandexcloud.net",
@@ -15,33 +14,25 @@
         "yandex.st",
         "yandexwebcache.net",
 
-        // VK
         "vk.com",
         "userapi.com",
         "vkuser.net",
         "vkuseraudio.net",
         "mycdn.me",
 
-        // Авито
         "avito.st",
 
-        // 2ГИС
         "2gis.com",
 
-        // X5
         "x5static.net",
 
-        // Wildberries
         "wbstatic.net",
 
-        // Ozon
         "ozonusercontent.com",
         "ozon-os.io",
 
-        // Московская биржа
         "moex.com",
 
-        // Apple
         "apple.com",
         "itunes.com",
         "appstore.com",
