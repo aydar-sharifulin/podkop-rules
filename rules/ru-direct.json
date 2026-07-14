@@ -34,14 +34,26 @@
         "moex.com",
 
         "apple.com",
-        "itunes.com",
+        "apple-dns.net",
         "appstore.com",
         "mzstatic.com",
-        "apple-cloudkit.com",
+        "cdn-apple.com",
+        "aaplimg.com",
         "icloud.com",
         "icloud-content.com",
-        "cdn-apple.com",
-        "aaplimg.com"
+        "apple-cloudkit.com",
+
+        "push.apple.com",
+        "courier.push.apple.com",
+
+        "configuration.apple.com",
+        "deviceenrollment.apple.com",
+
+        "gdmf.apple.com",
+        "mesu.apple.com",
+
+        "appldnld.apple.com",
+        "updates.cdn-apple.com"
       ]
     }
   ]
