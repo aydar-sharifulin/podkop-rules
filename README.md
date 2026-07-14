@@ -1,26 +1,27 @@
 # Podkop Rule Sets
 
-Custom rule sets and helper scripts for **Podkop** and **sing-box**.
+Custom rule sets for **Podkop** and **sing-box**.
 
-The project automatically builds and publishes binary **`.srs`** rule sets through GitHub Actions.
+This repository automatically generates and publishes binary **`.srs`** rule sets using GitHub Actions.
 
-The recommended configuration uses **domain-based routing** instead of relying primarily on large GeoIP databases. This makes routing easier to understand, maintain and troubleshoot while remaining compatible with Russian services, banking applications and Apple devices.
+The project follows a **domain-first routing model**, where routing decisions are primarily based on domain names rather than large GeoIP databases. This provides predictable routing, easier maintenance and better compatibility with OpenWrt routers.
 
 ---
 
-## Features
+# Features
 
 - Automatic GitHub Releases
 - Domain-based DIRECT routing
+- Automatic DIRECT exclusions
 - OISD ad & malware blocking
-- Explicit PROXY exceptions
+- IP checker bypass
 - Optimized for OpenWrt
 - Compatible with Podkop and sing-box
-- Optional Podkop route-priority patch
+- Fully automated build pipeline
 
 ---
 
-## Routing Model
+# Routing Model
 
 ```text
 Private networks
@@ -33,11 +34,6 @@ OISD
 BLOCK
 
         ↓
-Explicit PROXY domains
-        ↓
-PROXY
-
-        ↓
 Russian & trusted domains
         ↓
 DIRECT
@@ -48,58 +44,191 @@ Everything else
 PROXY
 ```
 
+Routing decisions are intentionally kept simple:
+
+- trusted Russian services → DIRECT
+- advertisement and malware → BLOCK
+- everything else → PROXY
+
 ---
 
-## Rule Sets
+# Rule Sets
 
-| Rule Set | Description |
-|----------|-------------|
-| `ru-direct.srs` | Russian and trusted domains |
-| `ip-checkers.srs` | IP detection and geolocation services |
-| `oisd_small.srs` | Recommended ad & malware block list |
-| `oisd_big.srs` | More aggressive blocking |
+## ru-direct.srs
 
-Latest release:
+Russian and trusted domains that should bypass the proxy.
+
+Examples include:
+
+- `.ru`
+- `.рф`
+- `.su`
+- banking services
+- government services
+- Apple services
+- manually maintained trusted domains
+
+Release:
 
 ```text
-https://github.com/aydar-sharifulin/podkop-rules/releases/latest
+https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/ru-direct.srs
 ```
 
 ---
 
-## Optional Podkop Route Priority Patch
+## ip-checkers.srs
 
-Some Podkop versions evaluate general **DIRECT** rules before user-defined **PROXY** domains.
+IP detection and geolocation services.
 
-The optional patch changes the evaluation order:
+Generated automatically from:
 
 ```text
-BLOCK
-        ↓
-Explicit PROXY domains
-        ↓
-DIRECT domains
-        ↓
-Default PROXY
+https://raw.githubusercontent.com/misha-tgshv/shadowrocket-configuration-file/refs/heads/main/rules/domains_geo_detect.list
 ```
 
-This guarantees that manually configured proxy domains always take precedence over general DIRECT rule sets.
+Release:
 
-The patch **only changes route evaluation order**.
+```text
+https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/ip-checkers.srs
+```
 
-It does **not** modify:
-
-- sing-box
-- DNS
-- FakeIP
-- proxy protocols
-- generated rule sets
-
-> Reapply the patch after upgrading Podkop because `/usr/bin/podkop` may be replaced.
+These services are routed directly so they display the real ISP address instead of the proxy address.
 
 ---
 
-## Repository Structure
+## oisd_small.srs
+
+Recommended OISD block list.
+
+Designed for:
+
+- OpenWrt
+- mobile devices
+- banking applications
+- Apple ecosystem
+- maximum compatibility
+
+Release:
+
+```text
+https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/oisd_small.srs
+```
+
+---
+
+## oisd_big.srs
+
+More aggressive advertisement, tracking and malware blocking.
+
+Release:
+
+```text
+https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/oisd_big.srs
+```
+
+Use either:
+
+- `oisd_small.srs`
+
+or
+
+- `oisd_big.srs`
+
+but not both.
+
+---
+
+# Automatic DIRECT Exclusions
+
+The generated `ru-direct.srs` is not simply a compiled copy of `ru-direct.json`.
+
+During every build GitHub Actions automatically removes domains that should always use PROXY.
+
+The exclusions are collected from two sources:
+
+## Shadowrocket custom proxy list
+
+```text
+https://raw.githubusercontent.com/misha-tgshv/shadowrocket-configuration-file/refs/heads/main/rules/custom-proxy.list
+```
+
+and
+
+## Local exclusions
+
+```text
+allowlist/proxy-from-direct.txt
+```
+
+The resulting logic is:
+
+```text
+ru-direct.json
+
+AND
+
+NOT (
+    custom-proxy.list
+    OR
+    proxy-from-direct.txt
+)
+```
+
+This allows maintaining one common DIRECT list while selectively excluding domains that should always use the proxy.
+
+---
+
+# OISD Allowlist
+
+Both generated OISD rule sets are filtered before compilation.
+
+Domains listed in
+
+```text
+allowlist/oisd.txt
+```
+
+are automatically removed from:
+
+- `oisd_small.srs`
+- `oisd_big.srs`
+
+Current examples:
+
+```text
+appmetrica.yandex.net
+uaas.yandex.ru
+```
+
+This preserves compatibility with applications such as Finuslugi while keeping the rest of the OISD protection intact.
+
+---
+
+# Build Pipeline
+
+GitHub Actions automatically performs the following steps:
+
+1. Downloads external rule lists.
+2. Generates sing-box JSON rule sets.
+3. Applies the OISD allowlist.
+4. Downloads Shadowrocket `custom-proxy.list`.
+5. Reads local `proxy-from-direct.txt`.
+6. Removes proxy domains from `ru-direct.json`.
+7. Validates every generated JSON file.
+8. Verifies rule counts.
+9. Downloads the required sing-box version.
+10. Compiles every JSON file into binary `.srs`.
+11. Publishes the latest GitHub Release.
+
+The workflow runs:
+
+- manually (`workflow_dispatch`);
+- after repository changes;
+- once every day.
+
+---
+
+# Repository Structure
 
 ```text
 .github/
@@ -114,8 +243,7 @@ rules/
 └── ru-direct.json
 
 scripts/
-├── build_ruleset.py
-└── patch-podkop-proxy-priority.sh
+└── build_ruleset.py
 ```
 
 Generated during GitHub Actions:
@@ -125,9 +253,35 @@ build/
 output/
 ```
 
+These directories are temporary build artifacts and should not be committed.
+
 ---
 
-## Updating Podkop
+# Latest Release
+
+```text
+https://github.com/aydar-sharifulin/podkop-rules/releases/latest
+```
+
+Direct downloads:
+
+```text
+ru-direct.srs
+https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/ru-direct.srs
+
+ip-checkers.srs
+https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/ip-checkers.srs
+
+oisd_small.srs
+https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/oisd_small.srs
+
+oisd_big.srs
+https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/oisd_big.srs
+```
+
+---
+
+# Updating Podkop
 
 Update rule sets:
 
@@ -135,7 +289,7 @@ Update rule sets:
 podkop list_update
 ```
 
-Restart:
+Restart Podkop:
 
 ```sh
 podkop restart
@@ -149,20 +303,37 @@ rm -f /tmp/sing-box/cache.db
 podkop start
 ```
 
+A reboot also clears the temporary cache:
+
+```sh
+reboot
+```
+
 ---
 
-## Philosophy
+# Philosophy
 
-This project intentionally prefers **small, transparent domain rule sets** over large GeoIP databases.
+This project intentionally favors **domain-based routing** over large GeoIP databases.
 
-Benefits:
+Advantages:
 
 - predictable routing;
+- deterministic behavior;
 - easier troubleshooting;
-- smaller rule sets;
+- simpler rule sets;
 - faster updates;
-- easier maintenance.
+- centralized management through GitHub;
+- no router-side customization;
+- better compatibility with OpenWrt.
 
-GeoIP can still be added if a particular installation requires it, but it is **not part of the recommended configuration**.
+GeoIP can still be added when required, but it is **not part of the recommended configuration**.
+
+The router simply downloads the latest generated rule sets from GitHub Releases and applies them automatically.
 
 ---
+
+# License
+
+This repository contains generated rule sets built from publicly available upstream lists.
+
+Please respect the licenses of the original upstream projects.
