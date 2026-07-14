@@ -271,7 +271,6 @@ jobs:
 
           python3 - <<'PY'
           import json
-          import urllib.request
           from pathlib import Path
 
           ru_direct_path = Path(
@@ -280,14 +279,6 @@ jobs:
 
           local_exceptions_path = Path(
               "allowlist/proxy-from-direct.txt"
-          )
-
-          external_url = (
-              "https://raw.githubusercontent.com/"
-              "misha-tgshv/"
-              "shadowrocket-configuration-file/"
-              "refs/heads/main/rules/"
-              "custom-proxy.list"
           )
 
           if not ru_direct_path.exists():
@@ -399,45 +390,7 @@ jobs:
               f"{local_suffix_count}"
           )
 
-          # 2. Внешний custom-proxy.list.
-          print(
-              "Downloading external proxy "
-              "exceptions from:"
-          )
-          print(f"  {external_url}")
-
-          request = urllib.request.Request(
-              external_url,
-              headers={
-                  "User-Agent": (
-                      "podkop-rules-github-actions/1.0"
-                  )
-              },
-          )
-
-          try:
-              with urllib.request.urlopen(
-                  request,
-                  timeout=30,
-              ) as response:
-                  external_content = (
-                      response.read()
-                      .decode("utf-8")
-                  )
-
-          except Exception as error:
-              raise SystemExit(
-                  "Failed to download "
-                  f"custom-proxy.list: {error}"
-              ) from error
-
-          for line in external_content.splitlines():
-              parse_line(
-                  line,
-                  bare_as_suffix=False,
-              )
-
-          print("Combined proxy exceptions:")
+          print("Proxy exceptions:")
           print(
               f"  exact domains: "
               f"{len(exact_domains)}"
@@ -509,8 +462,6 @@ jobs:
           # original ru-direct
           # AND
           # NOT (
-          #   custom-proxy.list
-          #   OR
           #   proxy-from-direct.txt
           # )
           smart_rule = {
@@ -728,3 +679,4 @@ jobs:
             output/ip-checkers.srs
             output/oisd_big.srs
             output/oisd_small.srs
+
