@@ -53,12 +53,115 @@ jobs:
             "build/rules/ip-checkers.json"
 
           python3 scripts/build_ruleset.py \
+            "https://raw.githubusercontent.com/itdoginfo/allow-domains/refs/heads/main/Russia/outside-clashx.lst" \
+            "build/rules/russia-outside.json"
+
+          python3 scripts/build_ruleset.py \
             "https://dl.oisd.nl/oisd_big_surge.list" \
             "build/rules/oisd_big.json"
 
           python3 scripts/build_ruleset.py \
             "https://dl.oisd.nl/oisd_small_surge.list" \
             "build/rules/oisd_small.json"
+
+      - name: Merge external DIRECT domains
+        run: |
+          set -eu
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          ru_direct_path = Path("build/rules/ru-direct.json")
+          external_path = Path("build/rules/russia-outside.json")
+
+          domain_keys = (
+              "domain",
+              "domain_suffix",
+              "domain_keyword",
+              "domain_regex",
+          )
+
+          def load_json(path: Path) -> dict:
+              if not path.exists():
+                  raise SystemExit(
+                      f"Required file not found: {path}"
+                  )
+
+              with path.open(encoding="utf-8") as file:
+                  data = json.load(file)
+
+              if not isinstance(data.get("rules"), list):
+                  raise SystemExit(
+                      f"{path}: missing rules array"
+                  )
+
+              return data
+
+          base = load_json(ru_direct_path)
+          external = load_json(external_path)
+
+          merged = {
+              key: set()
+              for key in domain_keys
+          }
+
+          for data in (base, external):
+              for rule in data["rules"]:
+                  if not isinstance(rule, dict):
+                      continue
+
+                  for key in domain_keys:
+                      values = rule.get(key)
+
+                      if not isinstance(values, list):
+                          continue
+
+                      for value in values:
+                          if not isinstance(value, str):
+                              continue
+
+                          normalized = (
+                              value.strip()
+                              .lower()
+                              .rstrip(".")
+                          )
+
+                          if normalized:
+                              merged[key].add(normalized)
+
+          combined_rule = {
+              key: sorted(values)
+              for key, values in merged.items()
+              if values
+          }
+
+          if not combined_rule:
+              raise SystemExit(
+                  "Merged DIRECT rule set is empty"
+              )
+
+          result = {
+              "version": 3,
+              "rules": [combined_rule],
+          }
+
+          with ru_direct_path.open(
+              "w",
+              encoding="utf-8",
+          ) as file:
+              json.dump(
+                  result,
+                  file,
+                  ensure_ascii=False,
+                  indent=2,
+              )
+              file.write("\n")
+
+          print("Merged DIRECT domains:")
+          for key, values in combined_rule.items():
+              print(f"  {key}: {len(values)}")
+          PY
 
       - name: Apply OISD allowlist
         run: |
@@ -487,6 +590,7 @@ jobs:
 
           required_json_files="
           build/rules/ru-direct.json
+          build/rules/russia-outside.json
           build/rules/ip-checkers.json
           build/rules/oisd_big.json
           build/rules/oisd_small.json
@@ -546,6 +650,10 @@ jobs:
               Path(
                   "build/rules/ip-checkers.json"
               ): 100,
+
+              Path(
+                    "build/rules/russia-outside.json"
+              ): 20,
 
               Path(
                   "build/rules/oisd_big.json"
@@ -780,7 +888,7 @@ jobs:
           # Исключения идут отдельным PROXY ruleset и должны
           # находиться раньше ru-direct.list в конфигурации.
           ru_direct = load_json(
-              Path("rules/ru-direct.json")
+              Path("build/rules/ru-direct.json")
           )
 
           ip_checkers = load_json(
