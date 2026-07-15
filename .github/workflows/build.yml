@@ -373,9 +373,10 @@ jobs:
 
           python3 - <<'PY'
           import json
+          import urllib.request
           from pathlib import Path
 
-          source_path = Path(
+          local_path = Path(
               "allowlist/proxy-from-direct.txt"
           )
 
@@ -383,72 +384,183 @@ jobs:
               "build/proxy-exceptions.json"
           )
 
-          if not source_path.exists():
+          external_url = (
+              "https://raw.githubusercontent.com/"
+              "misha-tgshv/"
+              "shadowrocket-configuration-file/"
+              "refs/heads/main/rules/"
+              "custom-proxy.list"
+          )
+
+          if not local_path.exists():
               raise SystemExit(
-                  f"Required file not found: {source_path}"
+                  f"Required file not found: {local_path}"
               )
 
-          exact_domains = set()
-          suffix_domains = set()
-          keyword_domains = set()
-          regex_domains = set()
+          collected = {
+              "domain": set(),
+              "domain_suffix": set(),
+              "domain_keyword": set(),
+              "domain_regex": set(),
+          }
 
-          def normalize(value: str) -> str:
+          type_mapping = {
+              "DOMAIN": "domain",
+              "DOMAIN-SUFFIX": "domain_suffix",
+              "DOMAIN-KEYWORD": "domain_keyword",
+              "DOMAIN-REGEX": "domain_regex",
+          }
+
+          def normalize_domain(value: str) -> str:
               return (
                   value.strip()
                   .lower()
                   .rstrip(".")
               )
 
-          for raw_line in source_path.read_text(
+          def parse_content(
+              content: str,
+              bare_as_suffix: bool,
+              source_name: str,
+          ) -> None:
+              added = 0
+
+              for raw_line in content.splitlines():
+                  line = raw_line.strip()
+
+                  if not line:
+                      continue
+
+                  if line.startswith(("#", ";", "//")):
+                      continue
+
+                  parts = [
+                      part.strip()
+                      for part in line.split(",")
+                  ]
+
+                  if len(parts) == 1:
+                      if not bare_as_suffix:
+                          continue
+
+                      value = normalize_domain(parts[0])
+
+                      if value:
+                          before = len(
+                              collected["domain_suffix"]
+                          )
+
+                          collected[
+                              "domain_suffix"
+                          ].add(value)
+
+                          added += (
+                              len(collected["domain_suffix"])
+                              - before
+                          )
+
+                      continue
+
+                  if len(parts) < 2:
+                      continue
+
+                  rule_type = parts[0].upper()
+                  destination_key = type_mapping.get(
+                      rule_type
+                  )
+
+                  if destination_key is None:
+                      continue
+
+                  value = parts[1].strip()
+
+                  # Регулярные выражения не нормализуем:
+                  # регистр и завершающая точка могут быть
+                  # частью выражения.
+                  if destination_key != "domain_regex":
+                      value = normalize_domain(value)
+
+                  if not value:
+                      continue
+
+                  before = len(
+                      collected[destination_key]
+                  )
+
+                  collected[destination_key].add(value)
+
+                  added += (
+                      len(collected[destination_key])
+                      - before
+                  )
+
+              print(
+                  f"{source_name}: added "
+                  f"{added} unique rule(s)"
+              )
+
+          # Внешний список обязателен:
+          # при ошибке загрузки сборка должна завершиться,
+          # иначе DIRECT может стать шире незаметно.
+          print(
+              "Downloading external proxy exceptions:"
+          )
+          print(f"  {external_url}")
+
+          request = urllib.request.Request(
+              external_url,
+              headers={
+                  "User-Agent": (
+                      "podkop-rules-github-actions/1.0"
+                  )
+              },
+          )
+
+          try:
+              with urllib.request.urlopen(
+                  request,
+                  timeout=30,
+              ) as response:
+                  external_content = (
+                      response.read()
+                      .decode("utf-8")
+                  )
+          except Exception as error:
+              raise SystemExit(
+                  "Failed to download external "
+                  f"proxy list: {error}"
+              ) from error
+
+          parse_content(
+              external_content,
+              bare_as_suffix=False,
+              source_name="custom-proxy.list",
+          )
+
+          local_content = local_path.read_text(
               encoding="utf-8"
-          ).splitlines():
-              line = raw_line.strip()
+          )
 
-              if not line:
-                  continue
-
-              if line.startswith(("#", ";", "//")):
-                  continue
-
-              parts = [
-                  part.strip()
-                  for part in line.split(",")
-              ]
-
-              # Простая строка считается DOMAIN-SUFFIX.
-              if len(parts) == 1:
-                  value = normalize(parts[0])
-
-                  if value:
-                      suffix_domains.add(value)
-
-                  continue
-
-              rule_type = parts[0].upper()
-              value = normalize(parts[1])
-
-              if not value:
-                  continue
-
-              if rule_type == "DOMAIN":
-                  exact_domains.add(value)
-
-              elif rule_type == "DOMAIN-SUFFIX":
-                  suffix_domains.add(value)
-
-              elif rule_type == "DOMAIN-KEYWORD":
-                  keyword_domains.add(value)
-
-              elif rule_type == "DOMAIN-REGEX":
-                  regex_domains.add(value)
+          parse_content(
+              local_content,
+              bare_as_suffix=True,
+              source_name=str(local_path),
+          )
 
           payload = {
-              "domain": sorted(exact_domains),
-              "domain_suffix": sorted(suffix_domains),
-              "domain_keyword": sorted(keyword_domains),
-              "domain_regex": sorted(regex_domains),
+              key: sorted(values)
+              for key, values in collected.items()
           }
+
+          total = sum(
+              len(values)
+              for values in payload.values()
+          )
+
+          if total == 0:
+              raise SystemExit(
+                  "No proxy exceptions were collected"
+              )
 
           output_path.write_text(
               json.dumps(
@@ -459,129 +571,24 @@ jobs:
               encoding="utf-8",
           )
 
-          print("Proxy exceptions:")
-          print(f"  exact: {len(exact_domains)}")
-          print(f"  suffix: {len(suffix_domains)}")
-          print(f"  keyword: {len(keyword_domains)}")
-          print(f"  regex: {len(regex_domains)}")
-          PY
-
-      - name: Inject proxy exceptions into ru-direct
-        run: |
-          set -eu
-
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          ru_direct_path = Path(
-              "build/rules/ru-direct.json"
-          )
-
-          exceptions_path = Path(
-              "build/proxy-exceptions.json"
-          )
-
-          if not ru_direct_path.exists():
-              raise SystemExit(
-                  f"Required file not found: "
-                  f"{ru_direct_path}"
-              )
-
-          if not exceptions_path.exists():
-              raise SystemExit(
-                  f"Required file not found: "
-                  f"{exceptions_path}"
-              )
-
-          with ru_direct_path.open(
-              encoding="utf-8"
-          ) as file:
-              data = json.load(file)
-
-          with exceptions_path.open(
-              encoding="utf-8"
-          ) as file:
-              exceptions = json.load(file)
-
-          original_rules = data.get("rules")
-
-          if (
-              not isinstance(original_rules, list)
-              or not original_rules
-          ):
-              raise SystemExit(
-                  "ru-direct.json does not contain "
-                  "a non-empty rules array"
-              )
-
-          inverted_exceptions = {
-              "invert": True,
-          }
-
-          for key in (
-              "domain",
-              "domain_suffix",
-              "domain_keyword",
-              "domain_regex",
-          ):
-              values = exceptions.get(key)
-
-              if isinstance(values, list) and values:
-                  inverted_exceptions[key] = values
-
-          has_exceptions = any(
-              key != "invert"
-              for key in inverted_exceptions
-          )
-
-          if not has_exceptions:
-              print(
-                  "No proxy exceptions found; "
-                  "ru-direct remains unchanged"
-              )
-              raise SystemExit(0)
-
-          if len(original_rules) == 1:
-              original_direct_rule = original_rules[0]
-          else:
-              original_direct_rule = {
-                  "type": "logical",
-                  "mode": "or",
-                  "rules": original_rules,
-              }
-
-          # Итоговая логика:
-          #
-          # original DIRECT
-          # AND
-          # NOT(proxy exceptions)
-          smart_rule = {
-              "type": "logical",
-              "mode": "and",
-              "rules": [
-                  original_direct_rule,
-                  inverted_exceptions,
-              ],
-          }
-
-          data["rules"] = [smart_rule]
-
-          with ru_direct_path.open(
-              "w",
-              encoding="utf-8",
-          ) as file:
-              json.dump(
-                  data,
-                  file,
-                  ensure_ascii=False,
-                  indent=2,
-              )
-              file.write("\n")
-
+          print("Combined proxy exceptions:")
           print(
-              f"Generated final {ru_direct_path}"
+              f"  exact: "
+              f"{len(payload['domain'])}"
           )
+          print(
+              f"  suffix: "
+              f"{len(payload['domain_suffix'])}"
+          )
+          print(
+              f"  keyword: "
+              f"{len(payload['domain_keyword'])}"
+          )
+          print(
+              f"  regex: "
+              f"{len(payload['domain_regex'])}"
+          )
+          print(f"  total: {total}")
           PY
 
       - name: Validate generated JSON files
