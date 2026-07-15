@@ -16,6 +16,9 @@ on:
 permissions:
   contents: write
 
+env:
+  SING_BOX_VERSION: "1.12.17"
+
 concurrency:
   group: build-rule-sets
   cancel-in-progress: true
@@ -373,10 +376,9 @@ jobs:
 
           python3 - <<'PY'
           import json
-          import urllib.request
           from pathlib import Path
 
-          local_path = Path(
+          source_path = Path(
               "allowlist/proxy-from-direct.txt"
           )
 
@@ -384,17 +386,9 @@ jobs:
               "build/proxy-exceptions.json"
           )
 
-          external_url = (
-              "https://raw.githubusercontent.com/"
-              "misha-tgshv/"
-              "shadowrocket-configuration-file/"
-              "refs/heads/main/rules/"
-              "custom-proxy.list"
-          )
-
-          if not local_path.exists():
+          if not source_path.exists():
               raise SystemExit(
-                  f"Required file not found: {local_path}"
+                  f"Required file not found: {source_path}"
               )
 
           collected = {
@@ -418,134 +412,51 @@ jobs:
                   .rstrip(".")
               )
 
-          def parse_content(
-              content: str,
-              bare_as_suffix: bool,
-              source_name: str,
-          ) -> None:
-              added = 0
+          for raw_line in source_path.read_text(
+              encoding="utf-8"
+          ).splitlines():
+              line = raw_line.strip()
 
-              for raw_line in content.splitlines():
-                  line = raw_line.strip()
+              if not line:
+                  continue
 
-                  if not line:
-                      continue
+              if line.startswith(("#", ";", "//")):
+                  continue
 
-                  if line.startswith(("#", ";", "//")):
-                      continue
+              parts = [
+                  part.strip()
+                  for part in line.split(",")
+              ]
 
-                  parts = [
-                      part.strip()
-                      for part in line.split(",")
-                  ]
+              # Обычная строка считается DOMAIN-SUFFIX.
+              if len(parts) == 1:
+                  value = normalize_domain(parts[0])
 
-                  if len(parts) == 1:
-                      if not bare_as_suffix:
-                          continue
+                  if value:
+                      collected[
+                          "domain_suffix"
+                      ].add(value)
 
-                      value = normalize_domain(parts[0])
+                  continue
 
-                      if value:
-                          before = len(
-                              collected["domain_suffix"]
-                          )
+              if len(parts) < 2:
+                  continue
 
-                          collected[
-                              "domain_suffix"
-                          ].add(value)
-
-                          added += (
-                              len(collected["domain_suffix"])
-                              - before
-                          )
-
-                      continue
-
-                  if len(parts) < 2:
-                      continue
-
-                  rule_type = parts[0].upper()
-                  destination_key = type_mapping.get(
-                      rule_type
-                  )
-
-                  if destination_key is None:
-                      continue
-
-                  value = parts[1].strip()
-
-                  # Регулярные выражения не нормализуем:
-                  # регистр и завершающая точка могут быть
-                  # частью выражения.
-                  if destination_key != "domain_regex":
-                      value = normalize_domain(value)
-
-                  if not value:
-                      continue
-
-                  before = len(
-                      collected[destination_key]
-                  )
-
-                  collected[destination_key].add(value)
-
-                  added += (
-                      len(collected[destination_key])
-                      - before
-                  )
-
-              print(
-                  f"{source_name}: added "
-                  f"{added} unique rule(s)"
+              rule_type = parts[0].upper()
+              destination_key = type_mapping.get(
+                  rule_type
               )
 
-          # Внешний список обязателен:
-          # при ошибке загрузки сборка должна завершиться,
-          # иначе DIRECT может стать шире незаметно.
-          print(
-              "Downloading external proxy exceptions:"
-          )
-          print(f"  {external_url}")
+              if destination_key is None:
+                  continue
 
-          request = urllib.request.Request(
-              external_url,
-              headers={
-                  "User-Agent": (
-                      "podkop-rules-github-actions/1.0"
-                  )
-              },
-          )
+              value = parts[1].strip()
 
-          try:
-              with urllib.request.urlopen(
-                  request,
-                  timeout=30,
-              ) as response:
-                  external_content = (
-                      response.read()
-                      .decode("utf-8")
-                  )
-          except Exception as error:
-              raise SystemExit(
-                  "Failed to download external "
-                  f"proxy list: {error}"
-              ) from error
+              if destination_key != "domain_regex":
+                  value = normalize_domain(value)
 
-          parse_content(
-              external_content,
-              bare_as_suffix=False,
-              source_name="custom-proxy.list",
-          )
-
-          local_content = local_path.read_text(
-              encoding="utf-8"
-          )
-
-          parse_content(
-              local_content,
-              bare_as_suffix=True,
-              source_name=str(local_path),
-          )
+              if value:
+                  collected[destination_key].add(value)
 
           payload = {
               key: sorted(values)
@@ -571,11 +482,8 @@ jobs:
               encoding="utf-8",
           )
 
-          print("Combined proxy exceptions:")
-          print(
-              f"  exact: "
-              f"{len(payload['domain'])}"
-          )
+          print("Local proxy exceptions:")
+          print(f"  exact: {len(payload['domain'])}")
           print(
               f"  suffix: "
               f"{len(payload['domain_suffix'])}"
@@ -590,6 +498,7 @@ jobs:
           )
           print(f"  total: {total}")
           PY
+
 
       - name: Validate generated JSON files
         run: |
@@ -703,7 +612,7 @@ jobs:
         run: |
           set -eu
 
-          VERSION="1.12.17"
+          VERSION="${SING_BOX_VERSION}"
           ARCHIVE="sing-box-${VERSION}-linux-amd64.tar.gz"
           URL="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/${ARCHIVE}"
 
@@ -711,7 +620,10 @@ jobs:
             --fail \
             --location \
             --retry 3 \
+            --retry-all-errors \
             --retry-delay 5 \
+            --connect-timeout 15 \
+            --max-time 300 \
             "$URL" \
             --output "$ARCHIVE"
 
@@ -889,11 +801,12 @@ jobs:
                   f"{path}: {len(rules)} rules"
               )
 
-          # Для Shadowrocket DIRECT публикуется из исходного
-          # ru-direct.json.
+          # Для Shadowrocket DIRECT публикуется из итогового
+          # объединённого ru-direct.json.
           #
-          # Исключения идут отдельным PROXY ruleset и должны
-          # находиться раньше ru-direct.list в конфигурации.
+          # Инвертированный блок исключений пропускается,
+          # поскольку исключения публикуются отдельным
+          # proxy-from-direct.list.
           ru_direct = load_json(
               Path("build/rules/ru-direct.json")
           )
@@ -1053,3 +966,4 @@ jobs:
             output/ip-checkers.list
             output/oisd_big.list
             output/oisd_small.list
+
