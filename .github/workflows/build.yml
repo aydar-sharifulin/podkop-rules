@@ -1,4 +1,4 @@
-name: Build sing-box rule sets
+name: Build sing-box and Shadowrocket rule sets
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: build-sing-box-rule-sets
+  group: build-rule-sets
   cancel-in-progress: true
 
 jobs:
@@ -40,8 +40,8 @@ jobs:
           test -f allowlist/oisd.txt
           test -f allowlist/proxy-from-direct.txt
 
-          # Работаем с копией. Исходный rules/ru-direct.json
-          # в репозитории не изменяется.
+          # Сборка выполняется с копией.
+          # Исходный rules/ru-direct.json не изменяется.
           cp rules/ru-direct.json build/rules/ru-direct.json
 
       - name: Generate external rule sets
@@ -150,8 +150,7 @@ jobs:
                       else:
                           rule.pop(key, None)
 
-              # Удаляем правила, которые после фильтрации
-              # не содержат никаких значимых полей.
+              # Удаляем правила, которые стали пустыми.
               data["rules"] = [
                   rule
                   for rule in rules
@@ -265,6 +264,105 @@ jobs:
           )
           PY
 
+      - name: Build proxy exceptions
+        run: |
+          set -eu
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          source_path = Path(
+              "allowlist/proxy-from-direct.txt"
+          )
+
+          output_path = Path(
+              "build/proxy-exceptions.json"
+          )
+
+          if not source_path.exists():
+              raise SystemExit(
+                  f"Required file not found: {source_path}"
+              )
+
+          exact_domains = set()
+          suffix_domains = set()
+          keyword_domains = set()
+          regex_domains = set()
+
+          def normalize(value: str) -> str:
+              return (
+                  value.strip()
+                  .lower()
+                  .rstrip(".")
+              )
+
+          for raw_line in source_path.read_text(
+              encoding="utf-8"
+          ).splitlines():
+              line = raw_line.strip()
+
+              if not line:
+                  continue
+
+              if line.startswith(("#", ";", "//")):
+                  continue
+
+              parts = [
+                  part.strip()
+                  for part in line.split(",")
+              ]
+
+              # Простая строка считается DOMAIN-SUFFIX.
+              if len(parts) == 1:
+                  value = normalize(parts[0])
+
+                  if value:
+                      suffix_domains.add(value)
+
+                  continue
+
+              rule_type = parts[0].upper()
+              value = normalize(parts[1])
+
+              if not value:
+                  continue
+
+              if rule_type == "DOMAIN":
+                  exact_domains.add(value)
+
+              elif rule_type == "DOMAIN-SUFFIX":
+                  suffix_domains.add(value)
+
+              elif rule_type == "DOMAIN-KEYWORD":
+                  keyword_domains.add(value)
+
+              elif rule_type == "DOMAIN-REGEX":
+                  regex_domains.add(value)
+
+          payload = {
+              "domain": sorted(exact_domains),
+              "domain_suffix": sorted(suffix_domains),
+              "domain_keyword": sorted(keyword_domains),
+              "domain_regex": sorted(regex_domains),
+          }
+
+          output_path.write_text(
+              json.dumps(
+                  payload,
+                  ensure_ascii=False,
+                  indent=2,
+              ) + "\n",
+              encoding="utf-8",
+          )
+
+          print("Proxy exceptions:")
+          print(f"  exact: {len(exact_domains)}")
+          print(f"  suffix: {len(suffix_domains)}")
+          print(f"  keyword: {len(keyword_domains)}")
+          print(f"  regex: {len(regex_domains)}")
+          PY
+
       - name: Inject proxy exceptions into ru-direct
         run: |
           set -eu
@@ -277,8 +375,8 @@ jobs:
               "build/rules/ru-direct.json"
           )
 
-          local_exceptions_path = Path(
-              "allowlist/proxy-from-direct.txt"
+          exceptions_path = Path(
+              "build/proxy-exceptions.json"
           )
 
           if not ru_direct_path.exists():
@@ -287,129 +385,21 @@ jobs:
                   f"{ru_direct_path}"
               )
 
-          if not local_exceptions_path.exists():
+          if not exceptions_path.exists():
               raise SystemExit(
                   f"Required file not found: "
-                  f"{local_exceptions_path}"
-              )
-
-          exact_domains = set()
-          suffix_domains = set()
-
-          def normalize_domain(value: str) -> str:
-              return (
-                  value.strip()
-                  .lower()
-                  .rstrip(".")
-              )
-
-          def add_domain(
-              rule_type: str,
-              domain: str,
-          ) -> None:
-              domain = normalize_domain(domain)
-
-              if not domain:
-                  return
-
-              if rule_type == "DOMAIN":
-                  exact_domains.add(domain)
-
-              elif rule_type == "DOMAIN-SUFFIX":
-                  suffix_domains.add(domain)
-
-          def parse_line(
-              line: str,
-              bare_as_suffix: bool,
-          ) -> None:
-              line = line.strip()
-
-              if not line:
-                  return
-
-              if line.startswith(("#", ";", "//")):
-                  return
-
-              parts = [
-                  part.strip()
-                  for part in line.split(",")
-              ]
-
-              # В локальном файле разрешаем просто:
-              #
-              # example.com
-              #
-              # Такая строка считается DOMAIN-SUFFIX.
-              if len(parts) == 1:
-                  if bare_as_suffix:
-                      add_domain(
-                          "DOMAIN-SUFFIX",
-                          parts[0],
-                      )
-                  return
-
-              rule_type = parts[0].upper()
-              domain = parts[1]
-
-              if rule_type in {
-                  "DOMAIN",
-                  "DOMAIN-SUFFIX",
-              }:
-                  add_domain(
-                      rule_type,
-                      domain,
-                  )
-
-          # 1. Локальные пользовательские исключения.
-          print(
-              "Reading local proxy exceptions from:"
-          )
-          print(f"  {local_exceptions_path}")
-
-          local_content = (
-              local_exceptions_path.read_text(
-                  encoding="utf-8"
-              )
-          )
-
-          for line in local_content.splitlines():
-              parse_line(
-                  line,
-                  bare_as_suffix=True,
-              )
-
-          local_exact_count = len(exact_domains)
-          local_suffix_count = len(suffix_domains)
-
-          print(
-              f"Local exact domains: "
-              f"{local_exact_count}"
-          )
-          print(
-              f"Local domain suffixes: "
-              f"{local_suffix_count}"
-          )
-
-          print("Proxy exceptions:")
-          print(
-              f"  exact domains: "
-              f"{len(exact_domains)}"
-          )
-          print(
-              f"  domain suffixes: "
-              f"{len(suffix_domains)}"
-          )
-
-          if not exact_domains and not suffix_domains:
-              raise SystemExit(
-                  "No DOMAIN or DOMAIN-SUFFIX "
-                  "proxy exceptions were collected"
+                  f"{exceptions_path}"
               )
 
           with ru_direct_path.open(
               encoding="utf-8"
           ) as file:
               data = json.load(file)
+
+          with exceptions_path.open(
+              encoding="utf-8"
+          ) as file:
+              exceptions = json.load(file)
 
           original_rules = data.get("rules")
 
@@ -422,32 +412,33 @@ jobs:
                   "a non-empty rules array"
               )
 
-          # В одном обычном headless rule поля domain
-          # и domain_suffix сопоставляются через OR.
-          #
-          # invert=True превращает его в:
-          #
-          # NOT (
-          #   exact domains
-          #   OR
-          #   domain suffixes
-          # )
           inverted_exceptions = {
               "invert": True,
           }
 
-          if exact_domains:
-              inverted_exceptions["domain"] = sorted(
-                  exact_domains
+          for key in (
+              "domain",
+              "domain_suffix",
+              "domain_keyword",
+              "domain_regex",
+          ):
+              values = exceptions.get(key)
+
+              if isinstance(values, list) and values:
+                  inverted_exceptions[key] = values
+
+          has_exceptions = any(
+              key != "invert"
+              for key in inverted_exceptions
+          )
+
+          if not has_exceptions:
+              print(
+                  "No proxy exceptions found; "
+                  "ru-direct remains unchanged"
               )
+              raise SystemExit(0)
 
-          if suffix_domains:
-              inverted_exceptions[
-                  "domain_suffix"
-              ] = sorted(suffix_domains)
-
-          # Если исходный ru-direct содержит несколько
-          # отдельных правил, объединяем их через OR.
           if len(original_rules) == 1:
               original_direct_rule = original_rules[0]
           else:
@@ -459,11 +450,9 @@ jobs:
 
           # Итоговая логика:
           #
-          # original ru-direct
+          # original DIRECT
           # AND
-          # NOT (
-          #   proxy-from-direct.txt
-          # )
+          # NOT(proxy exceptions)
           smart_rule = {
               "type": "logical",
               "mode": "and",
@@ -492,7 +481,7 @@ jobs:
           )
           PY
 
-      - name: Validate final JSON files
+      - name: Validate generated JSON files
         run: |
           set -eu
 
@@ -501,6 +490,7 @@ jobs:
           build/rules/ip-checkers.json
           build/rules/oisd_big.json
           build/rules/oisd_small.json
+          build/proxy-exceptions.json
           "
 
           for file in $required_json_files; do
@@ -619,7 +609,7 @@ jobs:
 
           sing-box version
 
-      - name: Compile rule sets
+      - name: Compile sing-box rule sets
         run: |
           set -eu
 
@@ -644,10 +634,10 @@ jobs:
             test -s "$output_file"
           done
 
-          echo "Compiled rule sets:"
+          echo "Compiled sing-box rule sets:"
           ls -lh output/*.srs
 
-      - name: Verify compiled files
+      - name: Verify compiled sing-box files
         run: |
           set -eu
 
@@ -667,6 +657,270 @@ jobs:
             echo "Verified: $file"
           done
 
+      - name: Generate Shadowrocket rule lists
+        run: |
+          set -eu
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from typing import Any
+
+          output_dir = Path("output")
+          output_dir.mkdir(
+              parents=True,
+              exist_ok=True,
+          )
+
+          rule_types = {
+              "domain": "DOMAIN",
+              "domain_suffix": "DOMAIN-SUFFIX",
+              "domain_keyword": "DOMAIN-KEYWORD",
+              "domain_regex": "DOMAIN-REGEX",
+              "ip_cidr": "IP-CIDR",
+              "ip_cidr6": "IP-CIDR6",
+          }
+
+          def normalize(value: str) -> str:
+              return (
+                  value.strip()
+                  .lower()
+                  .rstrip(".")
+              )
+
+          def load_json(path: Path) -> Any:
+              if not path.exists():
+                  raise SystemExit(
+                      f"Required file not found: {path}"
+                  )
+
+              with path.open(encoding="utf-8") as file:
+                  return json.load(file)
+
+          def collect_rules(value: Any) -> set[str]:
+              """
+              Convert ordinary sing-box source rules to
+              Shadowrocket/Surge rule-set lines.
+
+              Inverted rules are skipped because PROXY exceptions
+              are published separately.
+              """
+              result: set[str] = set()
+
+              if isinstance(value, list):
+                  for item in value:
+                      result.update(collect_rules(item))
+
+                  return result
+
+              if not isinstance(value, dict):
+                  return result
+
+              if value.get("invert") is True:
+                  return result
+
+              for key, shadowrocket_type in rule_types.items():
+                  entries = value.get(key)
+
+                  if not isinstance(entries, list):
+                      continue
+
+                  for entry in entries:
+                      if not isinstance(entry, str):
+                          continue
+
+                      normalized = normalize(entry)
+
+                      if normalized:
+                          result.add(
+                              f"{shadowrocket_type},"
+                              f"{normalized}"
+                          )
+
+              nested_rules = value.get("rules")
+
+              if isinstance(nested_rules, list):
+                  result.update(
+                      collect_rules(nested_rules)
+                  )
+
+              return result
+
+          def write_list(
+              path: Path,
+              rules: set[str],
+              title: str,
+              allow_empty: bool = False,
+          ) -> None:
+              if not rules and not allow_empty:
+                  raise SystemExit(
+                      f"{path}: no rules generated"
+                  )
+
+              lines = [
+                  f"# {title}",
+                  "# Generated automatically by GitHub Actions.",
+                  "",
+                  *sorted(rules),
+                  "",
+              ]
+
+              path.write_text(
+                  "\n".join(lines),
+                  encoding="utf-8",
+              )
+
+              print(
+                  f"{path}: {len(rules)} rules"
+              )
+
+          # Для Shadowrocket DIRECT публикуется из исходного
+          # ru-direct.json.
+          #
+          # Исключения идут отдельным PROXY ruleset и должны
+          # находиться раньше ru-direct.list в конфигурации.
+          ru_direct = load_json(
+              Path("rules/ru-direct.json")
+          )
+
+          ip_checkers = load_json(
+              Path("build/rules/ip-checkers.json")
+          )
+
+          oisd_big = load_json(
+              Path("build/rules/oisd_big.json")
+          )
+
+          oisd_small = load_json(
+              Path("build/rules/oisd_small.json")
+          )
+
+          proxy_exceptions = load_json(
+              Path("build/proxy-exceptions.json")
+          )
+
+          write_list(
+              output_dir / "ru-direct.list",
+              collect_rules(ru_direct),
+              "Russian and trusted DIRECT domains",
+          )
+
+          write_list(
+              output_dir / "ip-checkers.list",
+              collect_rules(ip_checkers),
+              "IP detection and geolocation services",
+          )
+
+          write_list(
+              output_dir / "oisd_big.list",
+              collect_rules(oisd_big),
+              "OISD Big block list",
+          )
+
+          write_list(
+              output_dir / "oisd_small.list",
+              collect_rules(oisd_small),
+              "OISD Small block list",
+          )
+
+          write_list(
+              output_dir / "proxy-from-direct.list",
+              collect_rules(proxy_exceptions),
+              "Explicit PROXY exceptions from DIRECT",
+              allow_empty=True,
+          )
+          PY
+
+          echo "Generated Shadowrocket lists:"
+          ls -lh output/*.list
+
+      - name: Verify Shadowrocket rule lists
+        run: |
+          set -eu
+
+          required_lists="
+          output/ru-direct.list
+          output/proxy-from-direct.list
+          output/ip-checkers.list
+          output/oisd_big.list
+          output/oisd_small.list
+          "
+
+          for file in $required_lists; do
+            if [ ! -f "$file" ]; then
+              echo "Missing file: $file"
+              exit 1
+            fi
+
+            echo "Verified: $file"
+          done
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          minimums = {
+              Path("output/ru-direct.list"): 10,
+              Path("output/ip-checkers.list"): 100,
+              Path("output/oisd_big.list"): 10000,
+              Path("output/oisd_small.list"): 1000,
+          }
+
+          for path, minimum in minimums.items():
+              count = sum(
+                  1
+                  for line in path.read_text(
+                      encoding="utf-8"
+                  ).splitlines()
+                  if line.strip()
+                  and not line.lstrip().startswith(
+                      ("#", ";", "//")
+                  )
+              )
+
+              print(f"{path}: {count} rules")
+
+              if count < minimum:
+                  raise SystemExit(
+                      f"{path}: only {count} rules; "
+                      f"expected at least {minimum}"
+                  )
+
+          proxy_path = Path(
+              "output/proxy-from-direct.list"
+          )
+
+          proxy_count = sum(
+              1
+              for line in proxy_path.read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+              and not line.lstrip().startswith(
+                  ("#", ";", "//")
+              )
+          )
+
+          print(
+              f"{proxy_path}: {proxy_count} rules"
+          )
+          PY
+
+      - name: Show release files
+        run: |
+          set -eu
+
+          echo "Release files:"
+          ls -lh \
+            output/ru-direct.srs \
+            output/ip-checkers.srs \
+            output/oisd_big.srs \
+            output/oisd_small.srs \
+            output/ru-direct.list \
+            output/proxy-from-direct.list \
+            output/ip-checkers.list \
+            output/oisd_big.list \
+            output/oisd_small.list
+
       - name: Publish latest release
         uses: softprops/action-gh-release@v3
         with:
@@ -679,4 +933,8 @@ jobs:
             output/ip-checkers.srs
             output/oisd_big.srs
             output/oisd_small.srs
-
+            output/ru-direct.list
+            output/proxy-from-direct.list
+            output/ip-checkers.list
+            output/oisd_big.list
+            output/oisd_small.list
