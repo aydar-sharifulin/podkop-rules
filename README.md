@@ -1,23 +1,25 @@
-# Podkop Rule Sets
+# Rule Sets
 
-Custom rule sets for **Podkop** and **sing-box**.
+Custom rule sets for **Podkop**, **sing-box**, and **Shadowrocket**.
 
-This repository automatically generates and publishes binary **`.srs`** rule sets using GitHub Actions.
+This repository automatically downloads upstream rule lists, generates optimized rule sets, validates them, compiles binary **sing-box** rule sets, generates native **Shadowrocket** rule lists, and publishes everything through **GitHub Releases**.
 
-The project follows a **domain-first routing model**, where routing decisions are primarily based on domain names rather than large GeoIP databases. This provides predictable routing, easier maintenance and better compatibility with OpenWrt routers.
+The project follows a **domain-first routing model**, where routing decisions are primarily based on domain names rather than large GeoIP databases. This provides predictable routing, easier maintenance, and better compatibility with OpenWrt routers.
 
 ---
 
 # Features
 
 - Automatic GitHub Releases
-- Domain-based DIRECT routing
-- Automatic DIRECT exclusions
-- OISD ad & malware blocking
+- Domain-first routing
+- Automatic DIRECT list merging
+- OISD allowlist support
+- Native sing-box `.srs`
+- Native Shadowrocket `.list`
 - IP checker bypass
 - Optimized for OpenWrt
-- Compatible with Podkop and sing-box
-- Fully automated build pipeline
+- Compatible with Podkop
+- Fully automated CI/CD pipeline
 
 ---
 
@@ -34,7 +36,7 @@ OISD
 BLOCK
 
         ↓
-Russian & trusted domains
+DIRECT domains
         ↓
 DIRECT
 
@@ -44,163 +46,116 @@ Everything else
 PROXY
 ```
 
-Routing decisions are intentionally kept simple:
+Routing is intentionally simple:
 
-- trusted Russian services → DIRECT
-- advertisement and malware → BLOCK
+- trusted services → DIRECT
+- advertisements & malware → BLOCK
 - everything else → PROXY
+
+---
+
+# External Sources
+
+The repository automatically builds rule sets from several upstream projects.
+
+| Source | Purpose |
+|---------|---------|
+| domains_geo_detect.list | IP detection and geolocation services |
+| Russia/outside-clashx.lst | Russian services that should bypass the proxy |
+| OISD Big | Advertisement, tracking and malware blocking |
+| OISD Small | Lightweight advertisement blocking |
+
+Local repository data:
+
+- `rules/ru-direct.json`
+- `allowlist/oisd.txt`
+- `allowlist/proxy-from-direct.txt`
 
 ---
 
 # Rule Sets
 
-## ru-direct.srs
+## sing-box
 
-Russian and trusted domains that should bypass the proxy.
+Generated binary rule sets:
 
-Examples include:
-
-- `.ru`
-- `.рф`
-- `.su`
-- banking services
-- government services
-- Apple services
-- manually maintained trusted domains
-
-Release:
-
-```text
-https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/ru-direct.srs
-```
-
----
-
-## ip-checkers.srs
-
-IP detection and geolocation services.
-
-Generated automatically from:
-
-```text
-https://raw.githubusercontent.com/misha-tgshv/shadowrocket-configuration-file/refs/heads/main/rules/domains_geo_detect.list
-```
-
-Release:
-
-```text
-https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/ip-checkers.srs
-```
-
-These services are routed directly so they display the real ISP address instead of the proxy address.
-
----
-
-## oisd_small.srs
-
-Recommended OISD block list.
-
-Designed for:
-
-- OpenWrt
-- mobile devices
-- banking applications
-- Apple ecosystem
-- maximum compatibility
-
-Release:
-
-```text
-https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/oisd_small.srs
-```
-
----
-
-## oisd_big.srs
-
-More aggressive advertisement, tracking and malware blocking.
-
-Release:
-
-```text
-https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/oisd_big.srs
-```
-
-Use either:
-
+- `ru-direct.srs`
+- `ip-checkers.srs`
 - `oisd_small.srs`
-
-or
-
 - `oisd_big.srs`
 
-but not both.
+---
+
+## Shadowrocket
+
+Generated native rule lists:
+
+- `ru-direct.list`
+- `proxy-from-direct.list`
+- `ip-checkers.list`
+- `oisd_small.list`
+- `oisd_big.list`
+
+The Shadowrocket rule lists are generated automatically from the same source data as the sing-box rule sets, ensuring identical routing behavior across both platforms.
 
 ---
 
-# Automatic DIRECT Exclusions
+# DIRECT Rule Generation
 
-The generated `ru-direct.srs` is not simply a compiled copy of `ru-direct.json`.
+The published `ru-direct.srs` is generated automatically during every build.
 
-During every build GitHub Actions automatically removes domains that should always use PROXY.
+The workflow merges:
 
-The exclusions are collected from two sources:
+- local `rules/ru-direct.json`
+- upstream `Russia/outside-clashx.lst`
 
-## Shadowrocket custom proxy list
+into one unified DIRECT rule set.
 
-```text
-https://raw.githubusercontent.com/misha-tgshv/shadowrocket-configuration-file/refs/heads/main/rules/custom-proxy.list
-```
+This allows maintaining a small local rule set while automatically incorporating trusted Russian services from upstream.
 
-and
+---
 
-## Local exclusions
+# Proxy Exceptions
+
+Some domains should always use the proxy even if they are trusted services.
+
+These domains are maintained in:
 
 ```text
 allowlist/proxy-from-direct.txt
 ```
 
-The resulting logic is:
+The file is automatically converted into:
 
-```text
-ru-direct.json
+- `proxy-from-direct.list`
 
-AND
+for Shadowrocket.
 
-NOT (
-    custom-proxy.list
-    OR
-    proxy-from-direct.txt
-)
-```
-
-This allows maintaining one common DIRECT list while selectively excluding domains that should always use the proxy.
+This keeps the DIRECT list and proxy exceptions independent and easy to maintain.
 
 ---
 
 # OISD Allowlist
 
-Both generated OISD rule sets are filtered before compilation.
-
-Domains listed in
+Before compiling the OISD rule sets, GitHub Actions removes domains listed in:
 
 ```text
 allowlist/oisd.txt
 ```
 
-are automatically removed from:
+from both:
 
-- `oisd_small.srs`
-- `oisd_big.srs`
+- `oisd_small`
+- `oisd_big`
 
-Current examples:
+Typical examples include:
 
 ```text
 appmetrica.yandex.net
 uaas.yandex.ru
 ```
 
-This preserves compatibility with applications such as Finuslugi while keeping the rest of the OISD protection intact.
+This preserves compatibility with applications such as Finuslugi while keeping OISD protection enabled.
 
 ---
 
@@ -209,15 +164,15 @@ This preserves compatibility with applications such as Finuslugi while keeping t
 GitHub Actions automatically performs the following steps:
 
 1. Downloads external rule lists.
-2. Generates sing-box JSON rule sets.
+2. Merges Russian DIRECT domains.
 3. Applies the OISD allowlist.
-4. Downloads Shadowrocket `custom-proxy.list`.
-5. Reads local `proxy-from-direct.txt`.
-6. Removes proxy domains from `ru-direct.json`.
-7. Validates every generated JSON file.
-8. Verifies rule counts.
-9. Downloads the required sing-box version.
-10. Compiles every JSON file into binary `.srs`.
+4. Builds proxy exception lists.
+5. Validates generated JSON files.
+6. Verifies rule counts.
+7. Downloads the required sing-box version.
+8. Compiles binary `.srs` rule sets.
+9. Generates native Shadowrocket rule lists.
+10. Verifies all generated artifacts.
 11. Publishes the latest GitHub Release.
 
 The workflow runs:
@@ -253,30 +208,33 @@ build/
 output/
 ```
 
-These directories are temporary build artifacts and should not be committed.
+These directories contain temporary build artifacts and should not be committed.
 
 ---
 
 # Latest Release
 
-```text
 https://github.com/aydar-sharifulin/podkop-rules/releases/latest
-```
 
-Direct downloads:
+Generated artifacts:
+
+## sing-box
 
 ```text
 ru-direct.srs
-https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/ru-direct.srs
-
 ip-checkers.srs
-https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/ip-checkers.srs
-
 oisd_small.srs
-https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/oisd_small.srs
-
 oisd_big.srs
-https://github.com/aydar-sharifulin/podkop-rules/releases/download/latest/oisd_big.srs
+```
+
+## Shadowrocket
+
+```text
+ru-direct.list
+proxy-from-direct.list
+ip-checkers.list
+oisd_small.list
+oisd_big.list
 ```
 
 ---
@@ -313,7 +271,7 @@ reboot
 
 # Philosophy
 
-This project intentionally favors **domain-based routing** over large GeoIP databases.
+This project intentionally favors **domain-first routing** over large GeoIP databases.
 
 Advantages:
 
@@ -322,13 +280,15 @@ Advantages:
 - easier troubleshooting;
 - simpler rule sets;
 - faster updates;
-- centralized management through GitHub;
+- centralized management;
 - no router-side customization;
 - better compatibility with OpenWrt.
 
-GeoIP can still be added when required, but it is **not part of the recommended configuration**.
+The router contains almost no routing logic.
 
-The router simply downloads the latest generated rule sets from GitHub Releases and applies them automatically.
+All routing intelligence is centralized in this repository.
+
+Updating GitHub Releases automatically updates routing behavior on every router without changing the router configuration.
 
 ---
 
