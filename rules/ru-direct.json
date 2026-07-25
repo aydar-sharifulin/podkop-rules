@@ -8,11 +8,11 @@
         "xn--p1ai",
 
         "yandex.net",
-        "yastatic.net",
-        "yandexcloud.net",
         "yandex.com",
         "yandex.st",
+        "yandexcloud.net",
         "yandexwebcache.net",
+        "yastatic.net",
         "yantp.net",
 
         "vk.com",
@@ -52,7 +52,12 @@
         "icloud-content.com",
         "apple-cloudkit.com",
 
-        "ntp.org"
+        "ntp.org",
+        "time.cloudflare.com",
+
+        "globalsign.com",
+
+        "edp-tech.com"
       ]
     }
   ]
