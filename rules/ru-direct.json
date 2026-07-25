@@ -13,6 +13,7 @@
         "yandex.com",
         "yandex.st",
         "yandexwebcache.net",
+        "yantp.net",
 
         "vk.com",
         "userapi.com",
@@ -51,17 +52,7 @@
         "icloud-content.com",
         "apple-cloudkit.com",
 
-        "push.apple.com",
-        "courier.push.apple.com",
-
-        "configuration.apple.com",
-        "deviceenrollment.apple.com",
-
-        "gdmf.apple.com",
-        "mesu.apple.com",
-
-        "appldnld.apple.com",
-        "updates.cdn-apple.com"
+        "ntp.org"
       ]
     }
   ]
